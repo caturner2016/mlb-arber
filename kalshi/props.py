@@ -1,294 +1,168 @@
 """
-Discover today's MLB player prop markets on Kalshi.
+Kalshi MLB prop market cache.
 
-Uses the Kalshi events API to auto-discover MLB series tickers rather than
-guessing them — then fetches all open markets under those series.
+Series tickers (confirmed working):
+  KXMLBHR  — home run markets  (ticker ends in -1 for 1+ HR)
+  KXMLBHIT — hits markets      (ticker ends in -1/-2/-3 for 1+/2+/3+ hits)
+
+Market title format: "Player Name: Home Run" or "Player Name: Hits 1+"
+Player name is always before the first colon.
 """
 
 from __future__ import annotations
 
-import re
+import logging
 from dataclasses import dataclass
-from datetime import date
-from typing import Any
 
-import aiohttp
+from kalshi.client import KalshiClient
 
 
-KALSHI_API = "https://trading-api.kalshi.com/trade-api/v2"
+log = logging.getLogger(__name__)
 
-# Keywords in Kalshi market titles that map to our prop types
-PROP_KEYWORDS: dict[str, str] = {
-    "home run": "home_run",
-    "homer": "home_run",
-    " hr ": "home_run",
-    "hit a home": "home_run",
-    "record a hit": "hit",
-    "get a hit": "hit",
-    "record a strikeout": "strikeout",
-    "strikeout": "strikeout",
-    "strike out": "strikeout",
-    "record an rbi": "rbi",
-    " rbi": "rbi",
-    "stolen base": "stolen_base",
-    "steal a base": "stolen_base",
-}
-
-# Baseball-related keywords to identify MLB events/series
-BASEBALL_KEYWORDS = {"mlb", "baseball", "home run", "strikeout", "pitcher", "batter"}
+HR_SERIES  = "KXMLBHR"
+HIT_SERIES = "KXMLBHIT"
 
 
 @dataclass
 class PropMarket:
     ticker: str
     title: str
-    player_name: str
-    prop_type: str
+    player_name: str   # lowercase, as extracted from title
+    prop_type: str     # "home_run" or "hit"
+    threshold: int     # 1, 2, or 3
     yes_ask: int | None
-    close_time: str
 
 
-def _extract_player_name(title: str) -> str:
-    """Extract player name from Kalshi market title."""
-    # "Will Aaron Judge hit a home run" → "Aaron Judge"
-    m = re.match(r"Will\s+([A-Z][a-z]+(?:\s+[A-Z][a-z']+)+)\s+", title)
-    if m:
-        return m.group(1).strip()
-    # "Aaron Judge: Home Run" style
-    m = re.match(r"([A-Z][a-z]+(?:\s+[A-Z][a-z']+)+)\s*[:\-]", title)
-    if m:
-        return m.group(1).strip()
-    # Fallback: first two capitalized words
-    words = title.split()
-    caps = [w.strip("'s") for w in words if w and w[0].isupper() and w[0].isalpha()]
-    if len(caps) >= 2:
-        return f"{caps[0]} {caps[1]}"
-    return ""
-
-
-def _detect_prop_type(title: str) -> str | None:
-    lower = " " + title.lower() + " "
-    for kw, ptype in PROP_KEYWORDS.items():
-        if kw in lower:
-            return ptype
-    return None
-
-
-def _is_baseball_related(text: str) -> bool:
-    lower = text.lower()
-    return any(kw in lower for kw in BASEBALL_KEYWORDS)
-
-
-async def _discover_mlb_series(session: aiohttp.ClientSession) -> list[str]:
+class PropCache:
     """
-    Hit the Kalshi events endpoint to find active MLB/baseball series tickers.
-    Returns a list of series tickers like ["KXMLBHR", "KXMLBHIT", ...].
+    Pre-loaded at startup. Maps:
+      hr_cache:   player_name (lower) → PropMarket
+      hits_cache: "player_name:threshold" → PropMarket
+    Refreshed every 30 minutes in background.
     """
-    series_tickers: set[str] = set()
-    cursor = None
 
-    for _ in range(10):  # max 10 pages
-        params: dict[str, Any] = {"status": "open", "limit": 200}
-        if cursor:
-            params["cursor"] = cursor
+    def __init__(self) -> None:
+        self.hr_cache:   dict[str, PropMarket] = {}
+        self.hits_cache: dict[str, PropMarket] = {}
 
-        try:
-            async with session.get(
-                f"{KALSHI_API}/events",
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status != 200:
-                    break
-                data = await resp.json(content_type=None)
-        except aiohttp.ClientError:
-            break
+    async def build(self, kalshi: KalshiClient) -> None:
+        log.info("Building Kalshi prop cache…")
+        hr_raw   = await self._load_series(kalshi, HR_SERIES,  "home_run")
+        hits_raw = await self._load_series(kalshi, HIT_SERIES, "hit")
 
-        events = data.get("events", [])
-        for event in events:
-            title = event.get("title", "") or event.get("sub_title", "")
-            series = event.get("series_ticker", "")
-            category = event.get("category", "")
+        new_hr:   dict[str, PropMarket] = {}
+        new_hits: dict[str, PropMarket] = {}
 
-            if _is_baseball_related(title) or _is_baseball_related(category) or _is_baseball_related(series):
-                if series:
-                    series_tickers.add(series)
+        for prop in hr_raw:
+            # Only keep 1+ HR markets
+            if prop.threshold == 1:
+                new_hr[prop.player_name] = prop
 
-        cursor = data.get("cursor")
-        if not cursor or not events:
-            break
+        for prop in hits_raw:
+            key = f"{prop.player_name}:{prop.threshold}"
+            new_hits[key] = prop
 
-    return list(series_tickers)
+        self.hr_cache   = new_hr
+        self.hits_cache = new_hits
+        log.info(f"Cache ready: {len(new_hr)} HR markets, {len(new_hits)} hits markets")
 
+    async def _load_series(
+        self, kalshi: KalshiClient, series: str, prop_type: str
+    ) -> list[PropMarket]:
+        results: list[PropMarket] = []
+        cursor = None
 
-async def _fetch_markets_for_series(
-    session: aiohttp.ClientSession,
-    series: str,
-) -> list[dict]:
-    """Fetch all open markets for a given series ticker."""
-    markets: list[dict] = []
-    cursor = None
+        while True:
+            try:
+                data = await kalshi.get_markets(series, cursor)
+            except Exception as e:
+                log.warning(f"Cache load error ({series}): {e}")
+                break
 
-    while True:
-        params: dict[str, Any] = {"series_ticker": series, "status": "open", "limit": 200}
-        if cursor:
-            params["cursor"] = cursor
+            markets = data.get("markets", [])
+            for m in markets:
+                ticker = m.get("ticker", "")
+                title  = m.get("title", "")
 
-        try:
-            async with session.get(
-                f"{KALSHI_API}/markets",
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status != 200:
-                    break
-                data = await resp.json(content_type=None)
-        except aiohttp.ClientError:
-            break
+                # Player name is before the colon: "Aaron Judge: Home Run"
+                player = title.split(":")[0].strip().lower()
+                if not player:
+                    continue
 
-        batch = data.get("markets", [])
-        markets.extend(batch)
-        cursor = data.get("cursor")
-        if not cursor or not batch:
-            break
+                # Threshold from ticker suffix (-1, -2, -3)
+                threshold = None
+                if ticker.endswith("-1"):
+                    threshold = 1
+                elif ticker.endswith("-2"):
+                    threshold = 2
+                elif ticker.endswith("-3"):
+                    threshold = 3
 
-    return markets
+                if threshold is None:
+                    continue
 
+                yes_ask = m.get("yes_ask")
+                results.append(PropMarket(
+                    ticker=ticker,
+                    title=title,
+                    player_name=player,
+                    prop_type=prop_type,
+                    threshold=threshold,
+                    yes_ask=yes_ask,
+                ))
 
-async def _broad_market_search(session: aiohttp.ClientSession) -> list[dict]:
-    """
-    Fallback: search all open markets for baseball-related titles.
-    Used if series discovery finds nothing.
-    """
-    markets: list[dict] = []
-    cursor = None
+            cursor = data.get("cursor")
+            if not cursor or not markets:
+                break
 
-    for _ in range(5):
-        params: dict[str, Any] = {"status": "open", "limit": 200}
-        if cursor:
-            params["cursor"] = cursor
+        return results
 
-        try:
-            async with session.get(
-                f"{KALSHI_API}/markets",
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status != 200:
-                    break
-                data = await resp.json(content_type=None)
-        except aiohttp.ClientError:
-            break
+    def get_hr_ticker(self, player_name: str) -> PropMarket | None:
+        """Look up 1+ HR market by player name. Tries full name then last name."""
+        lower = player_name.lower().strip()
+        if lower in self.hr_cache:
+            return self.hr_cache[lower]
+        # Fallback: match by last name
+        last = lower.split()[-1] if lower.split() else ""
+        for key, prop in self.hr_cache.items():
+            if last and key.endswith(last):
+                return prop
+        return None
 
-        for m in data.get("markets", []):
-            title = m.get("title", "") or m.get("subtitle", "")
-            if _is_baseball_related(title) or _detect_prop_type(title):
-                markets.append(m)
-
-        cursor = data.get("cursor")
-        if not cursor:
-            break
-
-    return markets
-
-
-async def get_todays_props(
-    session: aiohttp.ClientSession,
-    target_date: date | None = None,
-) -> list[PropMarket]:
-    """
-    Find all active Kalshi MLB player prop markets.
-    Auto-discovers series tickers via the events API.
-    """
-    props: list[PropMarket] = []
-    seen: set[str] = set()
-
-    # Step 1: discover MLB series tickers
-    mlb_series = await _discover_mlb_series(session)
-
-    raw_markets: list[dict] = []
-
-    if mlb_series:
-        # Fetch markets from each discovered series
-        import asyncio
-        batches = await asyncio.gather(
-            *[_fetch_markets_for_series(session, s) for s in mlb_series]
-        )
-        for batch in batches:
-            raw_markets.extend(batch)
-    else:
-        # Fallback: broad search
-        raw_markets = await _broad_market_search(session)
-
-    # Step 2: parse out player prop markets
-    for m in raw_markets:
-        ticker = m.get("ticker", "")
-        if ticker in seen:
-            continue
-
-        # Try title fields in order of preference
-        title = (
-            m.get("title")
-            or m.get("subtitle")
-            or m.get("market_type")
-            or ""
-        )
-
-        prop_type = _detect_prop_type(title)
-        if not prop_type:
-            continue
-
-        player_name = _extract_player_name(title)
-        if not player_name:
-            continue
-
-        props.append(PropMarket(
-            ticker=ticker,
-            title=title,
-            player_name=player_name,
-            prop_type=prop_type,
-            yes_ask=m.get("yes_ask"),
-            close_time=m.get("close_time", ""),
-        ))
-        seen.add(ticker)
-
-    return props
-
-
-async def build_trigger_map(
-    props: list[PropMarket],
-    player_id_map: dict[str, int],
-) -> dict[tuple[int, str], PropMarket]:
-    """Map (player_id, prop_type) → PropMarket."""
-    from mlb.players import resolve_player
-
-    trigger_map: dict[tuple[int, str], PropMarket] = {}
-    for prop in props:
-        pid = resolve_player(prop.player_name, player_id_map)
-        if pid is None:
-            continue
-        key = (pid, prop.prop_type)
-        if key not in trigger_map or (prop.yes_ask or 100) < (trigger_map[key].yes_ask or 100):
-            trigger_map[key] = prop
-
-    return trigger_map
+    def get_hit_ticker(self, player_name: str, threshold: int) -> PropMarket | None:
+        """Look up hits market by player name and threshold (1, 2, or 3)."""
+        lower = player_name.lower().strip()
+        key   = f"{lower}:{threshold}"
+        if key in self.hits_cache:
+            return self.hits_cache[key]
+        # Fallback: last name
+        last = lower.split()[-1] if lower.split() else ""
+        for k, prop in self.hits_cache.items():
+            name_part = k.split(":")[0]
+            thr_part  = int(k.split(":")[1]) if ":" in k else 0
+            if last and name_part.endswith(last) and thr_part == threshold:
+                return prop
+        return None
 
 
 if __name__ == "__main__":
-    import asyncio
+    import asyncio, sys, yaml
 
     async def main() -> None:
-        connector = aiohttp.TCPConnector(limit=10)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            print("Discovering MLB series tickers...")
-            series = await _discover_mlb_series(session)
-            print(f"Found series: {series}")
-
-            print("\nFetching prop markets...")
-            props = await get_todays_props(session)
-            print(f"Found {len(props)} MLB prop markets\n")
-            for p in props[:30]:
-                print(f"  [{p.ticker}] {p.title!r}")
-                print(f"    player={p.player_name!r}  type={p.prop_type}  ask={p.yes_ask}¢")
+        cfg    = yaml.safe_load(open("config.yaml"))
+        kalshi = KalshiClient(
+            key_id=cfg.get("kalshi_key_id", ""),
+            private_key_path=cfg.get("kalshi_private_key_path", ""),
+            paper_mode=True,
+        )
+        cache = PropCache()
+        await cache.build(kalshi)
+        print(f"\nHR markets ({len(cache.hr_cache)}):")
+        for name, prop in list(cache.hr_cache.items())[:10]:
+            print(f"  {name!r:30s} → {prop.ticker}  ask={prop.yes_ask}¢")
+        print(f"\nHits markets ({len(cache.hits_cache)}):")
+        for key, prop in list(cache.hits_cache.items())[:10]:
+            print(f"  {key!r:35s} → {prop.ticker}  ask={prop.yes_ask}¢")
+        await kalshi.close()
 
     asyncio.run(main())

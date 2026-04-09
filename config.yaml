@@ -1,15 +1,29 @@
-mode: paper  # paper or live
+# ─────────────────────────────────────────────────
+# MLB Arber — config
+# Copy values from your old kalshi_hr_bot.py
+# ─────────────────────────────────────────────────
 
-# Speed
-poll_interval_sec: 1  # MLB Stats API polling — as fast as possible
+mode: paper   # paper | live
 
-# Execution
-max_trade_usd: 500      # max dollars to deploy per prop trigger
-min_edge_cents: 5       # only fire if yes_ask is still <= 95 cents after event confirmed
+# ── Kalshi credentials (live mode only) ──────────
+kalshi_key_id:          ""    # e.g. "1b7a51a0-6b45-4c07-b69e-c13490f31b5f"
+kalshi_private_key_path: ""   # e.g. "kalshi_key.pem"
 
-# Risk
-daily_loss_limit: 100   # halt if virtual P&L drops below -$100
+# ── Telegram alerts ───────────────────────────────
+telegram_token:   ""          # e.g. "8717655973:AAEpX-..."
+telegram_chat_id: ""          # e.g. "1811240289"
 
-# Kalshi auth (for live mode) — or set via env vars KALSHI_KEY_ID / KALSHI_PRIVATE_KEY_PATH
-kalshi_key_id: ""
-kalshi_private_key_path: ""
+# ── Speed ─────────────────────────────────────────
+poll_interval_sec: 0.5        # MLB feed poll (timecode trick = tiny responses)
+
+# ── HR trade settings ─────────────────────────────
+max_buy_cents: 96             # only buy YES if ask <= this
+sell_cents:    98             # flip HRs at this price
+max_hr_bet:    2.00           # max $ per HR trade
+
+# ── Hits trade settings ───────────────────────────
+max_hits_bet:  2.00           # max $ per hits trade
+hits_buy_cents: 99            # buy hits at 99c (IOC — hold to settlement)
+
+# ── Risk ──────────────────────────────────────────
+daily_loss_limit: 100         # halt if daily loss exceeds this
