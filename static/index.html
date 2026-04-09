@@ -8,195 +8,103 @@
   <title>MLB Arber</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #0a0a0a;
-      color: #fff;
-      min-height: 100vh;
-      padding: 16px;
-      padding-bottom: 40px;
+      background: #0a0a0a; color: #fff;
+      min-height: 100vh; padding: 16px; padding-bottom: 40px;
     }
-
     header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 20px;
-      padding-top: 8px;
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 16px; padding-top: 8px;
     }
-
     h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
     h1 span { color: #22c55e; }
-
-    #balance {
-      font-size: 13px;
-      color: #888;
-      background: #1a1a1a;
-      padding: 6px 12px;
-      border-radius: 20px;
-    }
+    #balance { font-size: 13px; color: #888; background: #1a1a1a; padding: 6px 12px; border-radius: 20px; }
     #balance b { color: #22c55e; }
 
-    .section-label {
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      color: #555;
-      margin-bottom: 8px;
+    /* Profile toggle */
+    .profile-toggle {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+      margin-bottom: 16px;
     }
+    .profile-btn {
+      padding: 12px; border: 2px solid #2a2a2a; border-radius: 12px;
+      background: #1a1a1a; color: #888; font-size: 14px; font-weight: 700;
+      cursor: pointer; text-align: center; transition: all 0.15s;
+    }
+    .profile-btn.active-home { border-color: #2563eb; color: #93c5fd; background: #1e3a5f22; }
+    .profile-btn.active-game { border-color: #22c55e; color: #22c55e; background: #05261522; }
+    .profile-btn small { display: block; font-size: 10px; font-weight: 500; opacity: 0.7; margin-top: 2px; }
 
-    /* Search + dropdown */
-    .player-wrap { margin-bottom: 24px; }
+    /* Metrics */
+    .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
+    .metric-card {
+      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px;
+      padding: 12px; text-align: center;
+    }
+    .metric-card .label { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 1px; }
+    .metric-card .value { font-size: 20px; font-weight: 800; margin: 4px 0 2px; }
+    .metric-card .sub   { font-size: 11px; color: #666; }
+    .metric-card.home-card { border-color: #1e3a5f; }
+    .metric-card.game-card { border-color: #052e16; }
+    .green { color: #22c55e; }
+    .blue  { color: #60a5fa; }
+
+    .section-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #555; margin-bottom: 8px; }
 
     #search {
-      width: 100%;
-      padding: 14px 16px;
-      font-size: 17px;
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 12px;
-      color: #fff;
-      outline: none;
-      margin-bottom: 8px;
+      width: 100%; padding: 14px 16px; font-size: 17px;
+      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px;
+      color: #fff; outline: none; margin-bottom: 8px;
     }
     #search::placeholder { color: #555; }
     #search:focus { border-color: #3a3a3a; }
-
-    #player-list {
-      max-height: 220px;
-      overflow-y: auto;
-      background: #1a1a1a;
-      border-radius: 12px;
-      border: 1px solid #2a2a2a;
-    }
-
+    .player-wrap { margin-bottom: 16px; }
+    #player-list { max-height: 200px; overflow-y: auto; background: #1a1a1a; border-radius: 12px; border: 1px solid #2a2a2a; }
     .player-item {
-      padding: 13px 16px;
-      font-size: 16px;
-      cursor: pointer;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      border-bottom: 1px solid #222;
-      transition: background 0.1s;
+      padding: 12px 16px; font-size: 16px; cursor: pointer;
+      display: flex; justify-content: space-between; align-items: center;
+      border-bottom: 1px solid #222; transition: background 0.1s;
     }
     .player-item:last-child { border-bottom: none; }
-    .player-item:active, .player-item.selected { background: #252525; }
-    .player-item.selected { border-left: 3px solid #22c55e; }
-
+    .player-item.selected { background: #252525; border-left: 3px solid #22c55e; }
     .player-badges { display: flex; gap: 6px; }
-    .badge {
-      font-size: 10px;
-      padding: 2px 7px;
-      border-radius: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-    }
-    .badge-hr { background: #7f1d1d; color: #fca5a5; }
+    .badge { font-size: 10px; padding: 2px 7px; border-radius: 10px; font-weight: 600; text-transform: uppercase; }
+    .badge-hr  { background: #7f1d1d; color: #fca5a5; }
     .badge-hit { background: #1e3a5f; color: #93c5fd; }
 
-    /* Selected player display */
     #selected-display {
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 12px;
-      padding: 14px 16px;
-      margin-bottom: 24px;
-      font-size: 18px;
-      font-weight: 600;
-      color: #aaa;
-      min-height: 52px;
+      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px;
+      padding: 14px 16px; margin-bottom: 16px; font-size: 18px; font-weight: 600;
+      color: #aaa; min-height: 52px;
     }
     #selected-display.active { color: #fff; border-color: #22c55e33; }
 
-    /* Trade buttons */
-    .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px; }
-
+    .buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
     .trade-btn {
-      padding: 22px 12px;
-      border: none;
-      border-radius: 16px;
-      font-size: 20px;
-      font-weight: 800;
-      cursor: pointer;
+      padding: 22px 12px; border: none; border-radius: 16px;
+      font-size: 18px; font-weight: 800; cursor: pointer;
       transition: transform 0.1s, opacity 0.1s;
-      letter-spacing: 0.5px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 4px;
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
     }
     .trade-btn:active { transform: scale(0.96); }
-    .trade-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+    .trade-btn:disabled { opacity: 0.3; cursor: not-allowed; transform: none; }
+    .trade-btn small { font-size: 10px; font-weight: 500; opacity: 0.8; text-transform: uppercase; letter-spacing: 1px; }
+    #btn-hit { background: linear-gradient(135deg, #1d4ed8, #2563eb); color: #fff; }
+    #btn-hr  { background: linear-gradient(135deg, #b91c1c, #ef4444); color: #fff; }
 
-    .trade-btn small {
-      font-size: 11px;
-      font-weight: 500;
-      opacity: 0.75;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-    }
-
-    #btn-hit {
-      background: linear-gradient(135deg, #1d4ed8, #2563eb);
-      color: #fff;
-    }
-    #btn-hr {
-      background: linear-gradient(135deg, #b91c1c, #ef4444);
-      color: #fff;
-    }
-
-    /* Result card */
-    #result {
-      border-radius: 14px;
-      padding: 18px;
-      font-size: 14px;
-      line-height: 1.7;
-      display: none;
-    }
+    #result { border-radius: 14px; padding: 16px; font-size: 14px; line-height: 1.8; display: none; }
     #result.success { background: #052e16; border: 1px solid #166534; }
     #result.error   { background: #2d0c0c; border: 1px solid #7f1d1d; }
     #result.loading { background: #1a1a1a; border: 1px solid #2a2a2a; color: #888; }
-
     .result-row { display: flex; justify-content: space-between; }
-    .result-row .label { color: #888; }
-    .result-row .value { font-weight: 600; }
-    .result-row .value.green { color: #22c55e; }
-    .result-row .value.red   { color: #ef4444; }
-    .result-title {
-      font-size: 17px;
-      font-weight: 700;
-      margin-bottom: 12px;
-      color: #22c55e;
-    }
-    .result-title.error-title { color: #ef4444; }
+    .result-row .lbl { color: #888; }
+    .result-row .val { font-weight: 600; }
+    .result-title { font-size: 16px; font-weight: 700; margin-bottom: 10px; color: #22c55e; }
+    .result-title.err { color: #ef4444; }
 
-    /* Spinner */
     @keyframes spin { to { transform: rotate(360deg); } }
-    .spinner {
-      width: 20px; height: 20px;
-      border: 2px solid #333;
-      border-top-color: #22c55e;
-      border-radius: 50%;
-      animation: spin 0.7s linear infinite;
-      margin: 0 auto;
-    }
-
-    /* Mode badge */
-    #mode-badge {
-      display: inline-block;
-      font-size: 10px;
-      padding: 3px 8px;
-      border-radius: 10px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-      margin-left: 8px;
-      vertical-align: middle;
-    }
-    .mode-paper { background: #713f12; color: #fde68a; }
-    .mode-live  { background: #052e16; color: #86efac; }
+    .spinner { width: 20px; height: 20px; border: 2px solid #333; border-top-color: #22c55e; border-radius: 50%; animation: spin 0.7s linear infinite; margin: 0 auto; }
   </style>
 </head>
 <body>
@@ -206,6 +114,33 @@
   <div id="balance">Balance: <b id="bal-val">—</b></div>
 </header>
 
+<!-- Profile toggle -->
+<div class="profile-toggle">
+  <div class="profile-btn active-home" id="btn-profile-home" onclick="setProfile('home')">
+    🏠 AT HOME
+    <small>buy ≤99¢ · hold to settle</small>
+  </div>
+  <div class="profile-btn" id="btn-profile-game" onclick="setProfile('game')">
+    🏟 AT GAME
+    <small>buy ≤96¢ · flip at 99¢</small>
+  </div>
+</div>
+
+<!-- Metrics -->
+<div class="metrics">
+  <div class="metric-card home-card">
+    <div class="label">🏠 Home</div>
+    <div class="value blue" id="m-home-pnl">$0.00</div>
+    <div class="sub" id="m-home-trades">0 trades</div>
+  </div>
+  <div class="metric-card game-card">
+    <div class="label">🏟 Game</div>
+    <div class="value green" id="m-game-pnl">$0.00</div>
+    <div class="sub" id="m-game-trades">0 trades</div>
+  </div>
+</div>
+
+<!-- Player search -->
 <div class="player-wrap">
   <div class="section-label">Select Batter</div>
   <input id="search" type="text" placeholder="Search player..." autocomplete="off" autocorrect="off" spellcheck="false">
@@ -216,137 +151,124 @@
 
 <div class="buttons">
   <button class="trade-btn" id="btn-hit" disabled onclick="trade('hit')">
-    🟦 HIT
-    <small>buy ≤96¢ → sell 99¢</small>
+    🔵 1ST HIT<small>hold to settle</small>
   </button>
   <button class="trade-btn" id="btn-hr" disabled onclick="trade('home_run')">
-    🔴 HOME RUN
-    <small>buy ≤96¢ → sell 99¢</small>
+    🔴 HOME RUN<small>hold to settle</small>
   </button>
 </div>
 
 <div id="result"></div>
 
 <script>
-  // ── State ──────────────────────────────────────────────────────────────────
   let allPlayers = [];
   let selectedPlayer = null;
-  let mode = 'paper';
+  let currentProfile = 'home';
 
-  // Hit counts per player — persisted to localStorage so refresh doesn't reset
-  // { "aaron judge": 1, "shohei ohtani": 2, ... }
   const HIT_KEY = 'mlbarber_hits_' + new Date().toISOString().slice(0,10);
   let hitCounts = JSON.parse(localStorage.getItem(HIT_KEY) || '{}');
 
-  function getHitCount(playerName) {
-    return hitCounts[playerName.toLowerCase()] || 0;
-  }
-  function incrementHit(playerName) {
-    const k = playerName.toLowerCase();
-    hitCounts[k] = (hitCounts[k] || 0) + 1;
-    localStorage.setItem(HIT_KEY, JSON.stringify(hitCounts));
+  function getHitCount(name)   { return hitCounts[name.toLowerCase()] || 0; }
+  function incrementHit(name)  { const k = name.toLowerCase(); hitCounts[k] = (hitCounts[k]||0)+1; localStorage.setItem(HIT_KEY, JSON.stringify(hitCounts)); }
+  function nextThreshold(name) { return getHitCount(name) + 1; }
+
+  // ── Profile ────────────────────────────────────────────────────────────────
+  function setProfile(p) {
+    currentProfile = p;
+    document.getElementById('btn-profile-home').className = 'profile-btn' + (p==='home' ? ' active-home' : '');
+    document.getElementById('btn-profile-game').className = 'profile-btn' + (p==='game' ? ' active-game' : '');
+    updateButtons();
   }
 
-  function nextHitThreshold(playerName) {
-    return getHitCount(playerName) + 1;  // next threshold to trade (1, 2, or 3)
+  function profileLabels() {
+    if (currentProfile === 'home') return { hit: 'hold to settle', hr: 'hold to settle' };
+    return { hit: 'flip at 99¢', hr: 'flip at 99¢' };
   }
 
-  function updateHitButton() {
-    if (!selectedPlayer) return;
-    const threshold = nextHitThreshold(selectedPlayer.name);
-    const btn = document.getElementById('btn-hit');
-    const labels = { 1: '1ST HIT', 2: '2ND HIT', 3: '3RD HIT' };
-    const label  = labels[threshold] || 'HITS DONE';
-    const avail  = selectedPlayer.has_hit && threshold <= 3;
-    btn.disabled = !avail;
-    btn.innerHTML = `🔵 ${label}<small>buy ≤96¢ → sell 99¢</small>`;
+  // ── Metrics ────────────────────────────────────────────────────────────────
+  async function loadMetrics() {
+    try {
+      const d = await (await fetch('/api/metrics')).json();
+      const fmt = v => (v >= 0 ? '+' : '') + '$' + Math.abs(v).toFixed(2);
+      document.getElementById('m-home-pnl').textContent    = fmt(d.home.expected_pnl);
+      document.getElementById('m-home-trades').textContent = d.home.trades + ' trade' + (d.home.trades===1?'':'s');
+      document.getElementById('m-game-pnl').textContent    = fmt(d.game.expected_pnl);
+      document.getElementById('m-game-trades').textContent = d.game.trades + ' trade' + (d.game.trades===1?'':'s');
+    } catch(e) {}
   }
 
-  // ── Init ───────────────────────────────────────────────────────────────────
-  async function init() {
-    await Promise.all([loadPlayers(), loadBalance()]);
-  }
-
+  // ── Balance ────────────────────────────────────────────────────────────────
   async function loadBalance() {
     try {
-      const r = await fetch('/api/balance');
-      const d = await r.json();
+      const d = await (await fetch('/api/balance')).json();
       document.getElementById('bal-val').textContent = '$' + d.balance_usd.toFixed(2);
-    } catch(e) {
-      document.getElementById('bal-val').textContent = 'offline';
-    }
+    } catch(e) { document.getElementById('bal-val').textContent = 'offline'; }
   }
 
+  // ── Players ────────────────────────────────────────────────────────────────
   async function loadPlayers() {
     try {
-      const r = await fetch('/api/players');
-      const d = await r.json();
+      const d = await (await fetch('/api/players')).json();
       allPlayers = d.players;
       renderList(allPlayers);
     } catch(e) {
-      document.getElementById('player-list').innerHTML =
-        '<div class="player-item" style="color:#ef4444">Failed to load — check connection</div>';
+      document.getElementById('player-list').innerHTML = '<div class="player-item" style="color:#ef4444">Failed to load — check connection</div>';
     }
   }
 
   function renderList(players) {
     const el = document.getElementById('player-list');
-    if (!players.length) {
-      el.innerHTML = '<div class="player-item" style="color:#555">No players found</div>';
-      return;
-    }
+    if (!players.length) { el.innerHTML = '<div class="player-item" style="color:#555">No players found</div>'; return; }
     el.innerHTML = players.map(p => `
-      <div class="player-item ${selectedPlayer?.name === p.name ? 'selected' : ''}"
-           onclick="selectPlayer(${JSON.stringify(p).replace(/"/g, '&quot;')})">
+      <div class="player-item ${selectedPlayer?.name===p.name?'selected':''}" onclick='selectPlayer(${JSON.stringify(p).replace(/'/g,"&#39;")})'>
         <span>${p.name}</span>
         <span class="player-badges">
           ${p.has_hr  ? '<span class="badge badge-hr">HR</span>' : ''}
-          ${p.has_hit ? `<span class="badge badge-hit">${getHitCount(p.name) > 0 ? getHitCount(p.name) + ' HIT' : 'HIT'}</span>` : ''}
+          ${p.has_hit ? `<span class="badge badge-hit">${getHitCount(p.name)>0?getHitCount(p.name)+' HIT':'HIT'}</span>` : ''}
         </span>
-      </div>
-    `).join('');
+      </div>`).join('');
   }
 
-  // ── Search filter ──────────────────────────────────────────────────────────
   document.getElementById('search').addEventListener('input', function() {
     const q = this.value.toLowerCase();
-    const filtered = q ? allPlayers.filter(p => p.name.toLowerCase().includes(q)) : allPlayers;
-    renderList(filtered);
+    renderList(q ? allPlayers.filter(p => p.name.toLowerCase().includes(q)) : allPlayers);
   });
 
-  // ── Player selection ───────────────────────────────────────────────────────
   function selectPlayer(player) {
     selectedPlayer = player;
-
-    // Update display
     const disp = document.getElementById('selected-display');
     disp.textContent = player.name;
     disp.classList.add('active');
-
-    // Enable/disable buttons based on available markets + hit count
-    document.getElementById('btn-hr').disabled = !player.has_hr;
-    updateHitButton();
-
-    // Re-render list to show selection
+    updateButtons();
     const q = document.getElementById('search').value.toLowerCase();
-    const filtered = q ? allPlayers.filter(p => p.name.toLowerCase().includes(q)) : allPlayers;
-    renderList(filtered);
-
-    // Hide result from previous trade
+    renderList(q ? allPlayers.filter(p => p.name.toLowerCase().includes(q)) : allPlayers);
     document.getElementById('result').style.display = 'none';
-
-    // Scroll player list to show selected, then close keyboard
     document.getElementById('search').blur();
+  }
+
+  function updateButtons() {
+    if (!selectedPlayer) return;
+    const lbl = profileLabels();
+    const threshold = nextThreshold(selectedPlayer.name);
+    const hitLabels = {1:'1ST HIT', 2:'2ND HIT', 3:'3RD HIT'};
+    const hitLabel  = hitLabels[threshold] || 'HITS DONE';
+    const hitAvail  = selectedPlayer.has_hit && threshold <= 3;
+
+    const btnHit = document.getElementById('btn-hit');
+    const btnHr  = document.getElementById('btn-hr');
+    btnHit.disabled = !hitAvail;
+    btnHit.innerHTML = `🔵 ${hitLabel}<small>${lbl.hit}</small>`;
+    btnHr.disabled   = !selectedPlayer.has_hr;
+    btnHr.innerHTML  = `🔴 HOME RUN<small>${lbl.hr}</small>`;
   }
 
   // ── Trade ──────────────────────────────────────────────────────────────────
   async function trade(type) {
     if (!selectedPlayer) return;
-
-    const threshold = type === 'hit' ? nextHitThreshold(selectedPlayer.name) : 1;
+    const threshold = type === 'hit' ? nextThreshold(selectedPlayer.name) : 1;
     if (type === 'hit' && threshold > 3) return;
 
-    const btn = type === 'hit' ? document.getElementById('btn-hit') : document.getElementById('btn-hr');
+    const btn = document.getElementById(type === 'hit' ? 'btn-hit' : 'btn-hr');
     btn.disabled = true;
 
     const resultEl = document.getElementById('result');
@@ -354,7 +276,6 @@
     resultEl.style.display = 'block';
     resultEl.innerHTML = '<div class="spinner"></div>';
 
-    // Haptic feedback (iOS/Android)
     if (navigator.vibrate) navigator.vibrate(50);
 
     const t0 = Date.now();
@@ -364,54 +285,51 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           player_name: selectedPlayer.name.toLowerCase(),
-          trade_type: type,
-          threshold: threshold,
+          trade_type:  type,
+          threshold:   threshold,
+          profile:     currentProfile,
         }),
       });
-
       const d = await resp.json();
       const roundtrip = Date.now() - t0;
 
       if (!resp.ok) {
         resultEl.className = 'error';
-        resultEl.innerHTML = `
-          <div class="result-title error-title">❌ ${d.detail || 'Trade failed'}</div>
-          <div class="result-row"><span class="label">Player</span><span class="value">${selectedPlayer.name}</span></div>
-          <div class="result-row"><span class="label">Type</span><span class="value">${type}</span></div>
-        `;
+        resultEl.innerHTML = `<div class="result-title err">❌ ${d.detail||'Trade failed'}</div>
+          <div class="result-row"><span class="lbl">Player</span><span class="val">${selectedPlayer.name}</span></div>`;
       } else {
         resultEl.className = 'success';
-        const label = type === 'home_run' ? '⚾ HOME RUN' : '🔵 HIT';
+        const emoji = type==='home_run' ? '⚾' : '🔵';
+        const typeLabel = type==='home_run' ? 'HOME RUN' : `HIT ${threshold}+`;
+        const holdLabel = currentProfile==='home' ? 'Hold to $1.00 settlement' : `Flip at ${d.avg_price_cents<99?99:d.avg_price_cents}¢`;
         resultEl.innerHTML = `
-          <div class="result-title">${d.paper ? '[PAPER] ' : ''}${label} — ${d.player}</div>
-          <div class="result-row"><span class="label">Ticker</span><span class="value" style="font-size:12px">${d.ticker}</span></div>
-          <div class="result-row"><span class="label">Contracts</span><span class="value">${d.contracts} @ ${d.avg_price_cents}¢</span></div>
-          <div class="result-row"><span class="label">Cost</span><span class="value">$${d.cost_usd.toFixed(2)}</span></div>
-          <div class="result-row"><span class="label">Expected P&L</span><span class="value green">+$${d.expected_pnl_usd.toFixed(2)}</span></div>
-          <div class="result-row"><span class="label">Latency</span><span class="value">${d.latency_ms}ms server / ${roundtrip}ms total</span></div>
-        `;
+          <div class="result-title">${d.paper?'[PAPER] ':''}${emoji} ${typeLabel} — ${d.player}</div>
+          <div class="result-row"><span class="lbl">Profile</span><span class="val">${currentProfile==='home'?'🏠 Home':'🏟 Game'}</span></div>
+          <div class="result-row"><span class="lbl">Ticker</span><span class="val" style="font-size:11px">${d.ticker}</span></div>
+          <div class="result-row"><span class="lbl">Contracts</span><span class="val">${d.contracts} @ ${d.avg_price_cents}¢</span></div>
+          <div class="result-row"><span class="lbl">Cost</span><span class="val">$${d.cost_usd.toFixed(2)}</span></div>
+          <div class="result-row"><span class="lbl">Expected</span><span class="val green">+$${d.expected_pnl_usd.toFixed(2)}</span></div>
+          <div class="result-row"><span class="lbl">Exit</span><span class="val">${holdLabel}</span></div>
+          <div class="result-row"><span class="lbl">Latency</span><span class="val">${d.latency_ms}ms / ${roundtrip}ms</span></div>`;
 
-        // Track hit count and update button
-        if (type === 'hit') {
-          incrementHit(selectedPlayer.name);
-          updateHitButton();
-        }
-        // Refresh balance after trade
+        if (type === 'hit') { incrementHit(selectedPlayer.name); }
         loadBalance();
+        loadMetrics();
+        updateButtons();
       }
     } catch(e) {
       resultEl.className = 'error';
-      resultEl.innerHTML = `<div class="result-title error-title">❌ Network error — check connection</div>`;
+      resultEl.innerHTML = `<div class="result-title err">❌ Network error</div>`;
     }
 
-    // Re-enable button (hits button state managed by updateHitButton)
     if (type === 'home_run') btn.disabled = !selectedPlayer?.has_hr;
-    else updateHitButton();
+    else updateButtons();
   }
 
-  init();
-  // Refresh balance every 30 seconds
+  // ── Init ───────────────────────────────────────────────────────────────────
+  Promise.all([loadPlayers(), loadBalance(), loadMetrics()]);
   setInterval(loadBalance, 30000);
+  setInterval(loadMetrics, 15000);
 </script>
 </body>
 </html>
