@@ -1,26 +1,19 @@
 """
-NBA live boxscore feed — maximum speed via NBA CDN.
+NBA live points feed — maximum speed via NBA CDN.
 
 Endpoint: cdn.nba.com/static/json/liveData/boxscore/boxscore_{gameId}.json
-Updates every ~5 seconds during live games. No auth required.
+No auth required.
 
-Stat correction protection:
-  A stat must appear in 2 CONSECUTIVE polls before firing.
-  This prevents acting on stats that get corrected/removed immediately.
-  Cost: ~2-4 seconds of extra latency. Worth it.
+Points only — a basket is NEVER reversed, so we fire immediately on first
+detection with zero confirmation delay. Every millisecond counts in Q4.
 
-Prop types tracked:
-  points     — cumulative points scored
-  rebounds   — total rebounds (offensive + defensive)
-  assists    — assists
-  threes     — 3-pointers made
+Thresholds: 10, 15, 20, 25, 30, 35, 40 points
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
@@ -33,9 +26,6 @@ NBA_BOXSCORE = "https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game
 THRESHOLDS: dict[str, list[int]] = {
     "points": [10, 15, 20, 25, 30, 35, 40],
 }
-
-CONFIRM_POLLS = 2   # stat must appear this many consecutive polls before firing
-
 
 @dataclass
 class NBAStatEvent:
@@ -58,12 +48,7 @@ class NBAGamePoller:
 
     def __init__(self, game_id: str) -> None:
         self.game_id = game_id
-        # fired[(player_id, stat_type, threshold)] = True once fired
-        self._fired: set[tuple] = set()
-        # pending[(player_id, stat_type, threshold)] = consecutive poll count
-        self._pending: dict[tuple, int] = defaultdict(int)
-        # last known stat values for change detection
-        self._last_stats: dict[tuple[int, str], int] = {}
+        self._fired: set[tuple] = set()  # (player_id, stat_type, threshold)
 
     async def poll(self, session: aiohttp.ClientSession) -> list[NBAStatEvent]:
         url = NBA_BOXSCORE.format(game_id=self.game_id)
@@ -103,30 +88,22 @@ class NBAGamePoller:
                 for stat_type, value in stat_map.items():
                     for threshold in THRESHOLDS[stat_type]:
                         key = (pid, stat_type, threshold)
-
                         if key in self._fired:
                             continue
-
                         if value >= threshold:
-                            self._pending[key] += 1
-                            if self._pending[key] >= CONFIRM_POLLS:
-                                self._fired.add(key)
-                                del self._pending[key]
-                                ready_events.append(NBAStatEvent(
-                                    game_id=self.game_id,
-                                    player_id=pid,
-                                    player_name=name,
-                                    stat_type=stat_type,
-                                    threshold=threshold,
-                                    current_value=value,
-                                    period=period,
-                                    clock=clock,
-                                    feed_detected_at=detected_at,
-                                ))
-                        else:
-                            # Stat dropped (correction) — reset confirmation
-                            if key in self._pending:
-                                del self._pending[key]
+                            # Fire immediately — points are never reversed
+                            self._fired.add(key)
+                            ready_events.append(NBAStatEvent(
+                                game_id=self.game_id,
+                                player_id=pid,
+                                player_name=name,
+                                stat_type=stat_type,
+                                threshold=threshold,
+                                current_value=value,
+                                period=period,
+                                clock=clock,
+                                feed_detected_at=detected_at,
+                            ))
 
         return ready_events
 
