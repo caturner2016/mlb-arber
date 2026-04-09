@@ -1,16 +1,18 @@
 """
-MLB + NBA Arber — Kalshi prop latency bot.
+MLB + NBA + Weather Arber — Kalshi prop latency bot.
 
-MLB: HR and hits markets — fires when event confirmed in MLB Stats API feed
-NBA: Points/rebounds/assists/3pt markets — fires when stat confirmed in NBA CDN feed
-     2-poll confirmation delay protects against stat corrections
+MLB:     HR and hits markets — fires when event confirmed in MLB Stats API feed
+NBA:     Points markets — fires when stat confirmed in NBA CDN feed
+Weather: Temperature/rain markets — fires when NWS forecast diverges from Kalshi price
 
 Run:
-  py main.py              # paper mode
-  py main.py --live       # live trading
-  py main.py --dry-run    # orders skipped (logs + Telegram only)
-  py main.py --nba-only   # skip MLB, only watch NBA
-  py main.py --mlb-only   # skip NBA, only watch MLB
+  py main.py                  # paper mode (MLB + NBA + Weather)
+  py main.py --live           # live trading
+  py main.py --dry-run        # orders skipped (logs + Telegram only)
+  py main.py --nba-only       # skip MLB and Weather
+  py main.py --mlb-only       # skip NBA and Weather
+  py main.py --weather-only   # skip MLB and NBA
+  py main.py --no-weather     # MLB + NBA, no weather
 """
 
 from __future__ import annotations
@@ -29,10 +31,13 @@ from execution.paper import PaperTrader
 from kalshi.client import KalshiClient
 from kalshi.nba_props import NBAPropCache
 from kalshi.props import PropCache
+from kalshi.weather_props import WeatherPropCache
 from mlb.feed import PropEvent, stream_all_games
 from mlb.games import get_todays_games
 from nba.feed import NBAStatEvent, stream_nba_games
 from nba.games import get_todays_nba_games
+from weather.bot import WeatherBot
+from weather.noaa import NOAAClient
 
 
 logging.basicConfig(
@@ -201,12 +206,17 @@ async def execute_nba(
 # ── Background loops ───────────────────────────────────────────────────────────
 
 async def cache_refresh_loop(mlb_cache: PropCache, nba_cache: NBAPropCache,
-                              kalshi: KalshiClient) -> None:
+                              weather_cache: WeatherPropCache,
+                              kalshi: KalshiClient,
+                              mlb: bool, nba: bool, weather: bool) -> None:
     while True:
         await asyncio.sleep(1800)
         try:
-            await mlb_cache.build(kalshi)
-            await nba_cache.build(kalshi)
+            await asyncio.gather(
+                mlb_cache.build(kalshi)     if mlb     else asyncio.sleep(0),
+                nba_cache.build(kalshi)     if nba     else asyncio.sleep(0),
+                weather_cache.build(kalshi) if weather else asyncio.sleep(0),
+            )
             log.info("Caches refreshed")
         except Exception as e:
             log.warning(f"Cache refresh error: {e}")
@@ -225,7 +235,7 @@ async def daily_summary_loop(tg_fn, kalshi: KalshiClient) -> None:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-async def run(cfg: dict, dry_run: bool, mlb: bool, nba: bool) -> None:
+async def run(cfg: dict, dry_run: bool, mlb: bool, nba: bool, weather: bool) -> None:
     mode  = cfg.get("mode", "paper")
     paper = (mode != "live") or dry_run
 
@@ -233,7 +243,7 @@ async def run(cfg: dict, dry_run: bool, mlb: bool, nba: bool) -> None:
     tg_chat  = cfg.get("telegram_chat_id", "")
     tg_fn    = lambda msg: tg(tg_token, tg_chat, msg)
 
-    log.info(f"Arber  mode={'DRY RUN' if dry_run else mode}  MLB={mlb}  NBA={nba}")
+    log.info(f"Arber  mode={'DRY RUN' if dry_run else mode}  MLB={mlb}  NBA={nba}  Weather={weather}")
 
     kalshi = KalshiClient(
         key_id=cfg.get("kalshi_key_id", ""),
@@ -242,23 +252,29 @@ async def run(cfg: dict, dry_run: bool, mlb: bool, nba: bool) -> None:
     )
 
     # ── Build caches ──────────────────────────────────────────────────────────
-    mlb_cache = PropCache()
-    nba_cache = NBAPropCache()
+    mlb_cache     = PropCache()
+    nba_cache     = NBAPropCache()
+    weather_cache = WeatherPropCache()
+    noaa          = NOAAClient()
 
     await asyncio.gather(
-        mlb_cache.build(kalshi) if mlb else asyncio.sleep(0),
-        nba_cache.build(kalshi) if nba else asyncio.sleep(0),
+        mlb_cache.build(kalshi)     if mlb     else asyncio.sleep(0),
+        nba_cache.build(kalshi)     if nba     else asyncio.sleep(0),
+        weather_cache.build(kalshi) if weather else asyncio.sleep(0),
     )
 
-    nba_cfg = cfg.get("nba", {})
+    nba_cfg     = cfg.get("nba", {})
+    weather_cfg = cfg.get("weather", {})
     tg_fn(
         f"Bot started ({'DRY RUN' if dry_run else mode.upper()})\n"
         f"MLB: {len(mlb_cache.hr_cache)} HR + {len(mlb_cache.hits_cache)} hits markets\n"
         f"NBA: {len(nba_cache)} prop markets\n"
-        f"NBA max bet: ${nba_cfg.get('max_bet', 5)}"
+        f"Weather: {len(weather_cache)} markets\n"
+        f"NBA max bet: ${nba_cfg.get('max_bet', 5)}  "
+        f"Weather max bet: ${weather_cfg.get('max_bet', 10)}"
     )
 
-    asyncio.create_task(cache_refresh_loop(mlb_cache, nba_cache, kalshi))
+    asyncio.create_task(cache_refresh_loop(mlb_cache, nba_cache, weather_cache, kalshi, mlb, nba, weather))
     asyncio.create_task(daily_summary_loop(tg_fn, kalshi))
 
     fired: set[str] = set()
@@ -284,38 +300,63 @@ async def run(cfg: dict, dry_run: bool, mlb: bool, nba: bool) -> None:
         async for event in stream_nba_games(game_ids, poll_interval=1.0):
             await execute_nba(event, nba_cache, kalshi, cfg, tg_fn, fired, dry_run)
 
+    # ── Weather stream ────────────────────────────────────────────────────────
+    async def run_weather():
+        weather_bot = WeatherBot(
+            kalshi=kalshi,
+            weather_cache=weather_cache,
+            noaa=noaa,
+            cfg=cfg,
+            tg_fn=tg_fn,
+            dry_run=dry_run,
+        )
+        await weather_bot.run()
+
     tasks = []
     if mlb:
         tasks.append(asyncio.create_task(run_mlb()))
     if nba:
         tasks.append(asyncio.create_task(run_nba()))
+    if weather:
+        tasks.append(asyncio.create_task(run_weather()))
 
     if not tasks:
-        log.error("No sport selected — use --mlb-only or --nba-only or both")
+        log.error("No sport/market selected — specify at least one of --mlb-only/--nba-only/--weather-only")
         return
 
     await asyncio.gather(*tasks)
     await kalshi.close()
+    await noaa.close()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="MLB + NBA Kalshi prop latency bot")
-    parser.add_argument("--live",     action="store_true")
-    parser.add_argument("--dry-run",  action="store_true")
-    parser.add_argument("--mlb-only", action="store_true")
-    parser.add_argument("--nba-only", action="store_true")
-    parser.add_argument("--config",   default="config.yaml")
+    parser = argparse.ArgumentParser(description="MLB + NBA + Weather Kalshi prop latency bot")
+    parser.add_argument("--live",          action="store_true")
+    parser.add_argument("--dry-run",       action="store_true")
+    parser.add_argument("--mlb-only",      action="store_true")
+    parser.add_argument("--nba-only",      action="store_true")
+    parser.add_argument("--weather-only",  action="store_true")
+    parser.add_argument("--no-weather",    action="store_true")
+    parser.add_argument("--config",        default="config.yaml")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     if args.live:
         cfg["mode"] = "live"
 
-    mlb = not args.nba_only
-    nba = not args.mlb_only
+    if args.weather_only:
+        mlb, nba, weather = False, False, True
+    elif args.mlb_only:
+        mlb, nba, weather = True, False, False
+    elif args.nba_only:
+        mlb, nba, weather = False, True, False
+    else:
+        mlb     = True
+        nba     = True
+        weather = not args.no_weather
 
     try:
-        asyncio.run(run(cfg, dry_run=args.dry_run, mlb=mlb, nba=nba))
+        asyncio.run(run(cfg, dry_run=args.dry_run, mlb=mlb, nba=nba, weather=weather))
     except KeyboardInterrupt:
         log.info("Stopped")
 
