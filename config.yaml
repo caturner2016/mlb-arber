@@ -1,0 +1,15 @@
+mode: paper  # paper or live
+
+# Speed
+poll_interval_sec: 1  # MLB Stats API polling — as fast as possible
+
+# Execution
+max_trade_usd: 500      # max dollars to deploy per prop trigger
+min_edge_cents: 5       # only fire if yes_ask is still <= 95 cents after event confirmed
+
+# Risk
+daily_loss_limit: 100   # halt if virtual P&L drops below -$100
+
+# Kalshi auth (for live mode) — or set via env vars KALSHI_KEY_ID / KALSHI_PRIVATE_KEY_PATH
+kalshi_key_id: ""
+kalshi_private_key_path: ""
