@@ -1,16 +1,16 @@
 """
-MLB Arber — Kalshi HR + Hits prop latency bot.
+MLB + NBA Arber — Kalshi prop latency bot.
 
-Strategy: confirm event via MLB Stats API feed → buy YES on Kalshi before
-the market reprices to ~$1.00.
-
-  HR markets  (KXMLBHR):  buy at ask <= 96c, flip at 98c
-  Hits markets (KXMLBHIT): buy at 99c IOC, hold to $1.00 settlement
+MLB: HR and hits markets — fires when event confirmed in MLB Stats API feed
+NBA: Points/rebounds/assists/3pt markets — fires when stat confirmed in NBA CDN feed
+     2-poll confirmation delay protects against stat corrections
 
 Run:
   py main.py              # paper mode
   py main.py --live       # live trading
-  py main.py --dry-run    # live mode but orders are skipped (logs only)
+  py main.py --dry-run    # orders skipped (logs + Telegram only)
+  py main.py --nba-only   # skip MLB, only watch NBA
+  py main.py --mlb-only   # skip NBA, only watch MLB
 """
 
 from __future__ import annotations
@@ -22,15 +22,17 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 
-import aiohttp
 import requests
 import yaml
 
 from execution.paper import PaperTrader
 from kalshi.client import KalshiClient
+from kalshi.nba_props import NBAPropCache
 from kalshi.props import PropCache
 from mlb.feed import PropEvent, stream_all_games
 from mlb.games import get_todays_games
+from nba.feed import NBAStatEvent, stream_nba_games
+from nba.games import get_todays_nba_games
 
 
 logging.basicConfig(
@@ -42,7 +44,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-log = logging.getLogger("mlb-arber")
+log = logging.getLogger("arber")
 
 
 def load_config(path: str = "config.yaml") -> dict:
@@ -50,7 +52,7 @@ def load_config(path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-# ── Telegram ──────────────────────────────────────────────────────────────────
+# ── Telegram ───────────────────────────────────────────────────────────────────
 
 def tg(token: str, chat_id: str, msg: str) -> None:
     if not token or not chat_id:
@@ -65,25 +67,27 @@ def tg(token: str, chat_id: str, msg: str) -> None:
         log.warning(f"Telegram: {e}")
 
 
-# ── Trade execution ────────────────────────────────────────────────────────────
+# ── Generic buy + hold ─────────────────────────────────────────────────────────
 
-async def execute_hr(
-    event: PropEvent,
-    prop,
+async def buy_and_hold(
+    ticker: str,
+    player_name: str,
+    label: str,
+    max_buy_cents: int,
+    max_bet: float,
     kalshi: KalshiClient,
-    cfg: dict,
     tg_fn,
-    dry_run: bool = False,
+    dry_run: bool,
+    detected_at: float,
 ) -> None:
-    """Buy HR market YES, then flip at sell_cents."""
-    max_buy = cfg["max_buy_cents"]
-    sell_at = cfg["sell_cents"]
-    max_bet = cfg["max_hr_bet"]
-
-    result = await kalshi.get_yes_ask(prop.ticker, max_cents=max_buy)
+    """
+    Buy YES contracts up to max_bet, hold to $1.00 settlement.
+    Used for all NBA props (stat corrections make flipping risky).
+    """
+    result = await kalshi.get_yes_ask(ticker, max_cents=max_buy_cents)
     if result is None:
-        log.info(f"  HR: no asks <= {max_buy}c for {prop.ticker} — market already repriced")
-        tg_fn(f"HR MISS: {event.player_name}\nMarket already repriced\n{prop.ticker}")
+        log.info(f"  [{label}] market above {max_buy_cents}¢ — already repriced")
+        tg_fn(f"MISS [{label}]: {player_name}\nMarket already repriced\n{ticker}")
         return
 
     yes_cents, qty = result
@@ -92,126 +96,123 @@ async def execute_hr(
     count   = min(qty, int(spend / (yes_cents / 100)))
 
     if count < 1:
-        log.info(f"  HR: insufficient balance (${balance:.2f})")
+        log.info(f"  [{label}] insufficient balance ${balance:.2f}")
         return
 
-    cost           = count * yes_cents / 100
-    detect_str     = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    latency_ms     = (time.monotonic() - event.feed_detected_at) * 1000
+    cost       = count * yes_cents / 100
+    expected   = count * (100 - yes_cents) / 100
+    latency_ms = (time.monotonic() - detected_at) * 1000
+    ts         = datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
-    log.info(
-        f"  HR BUY: {count} contracts @ {yes_cents}¢  "
-        f"cost=${cost:.2f}  latency={latency_ms:.0f}ms"
-    )
+    log.info(f"  BUY [{label}] {count} @ {yes_cents}¢  cost=${cost:.2f}  latency={latency_ms:.0f}ms")
 
     if not dry_run:
-        order = await kalshi.place_order(prop.ticker, "yes", yes_cents, count, "limit")
-        filled_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    else:
-        order = {"dry_run": True}
-        filled_str = detect_str
+        await kalshi.place_order(ticker, "yes", yes_cents, count, "limit")
 
-    expected = count * (sell_at - yes_cents) / 100
     tg_fn(
-        f"BUY HR — {event.player_name}\n"
-        f"Ticker: {prop.ticker}\n"
+        f"BUY [{label}] — {player_name}\n"
+        f"Ticker: {ticker}\n"
         f"Contracts: {count} @ {yes_cents}¢\n"
-        f"Cost: ${cost:.2f}\n"
-        f"Flip target: {sell_at}¢  (+${expected:.2f})\n"
-        f"Detected: {detect_str}\n"
-        f"Filled:   {filled_str}\n"
+        f"Cost: ${cost:.2f}  |  Expected: +${expected:.2f}\n"
+        f"Hold to $1.00 settlement\n"
         f"Latency: {latency_ms:.0f}ms\n"
-        f"{'[DRY RUN]' if dry_run else ''}"
+        f"{'[DRY RUN]' if dry_run else '[LIVE]'}"
     )
 
-    if dry_run:
-        return
 
-    # Flip: sell at sell_cents in background
-    async def flip() -> None:
-        deadline = asyncio.get_event_loop().time() + 300
-        while asyncio.get_event_loop().time() < deadline:
-            try:
-                await kalshi.place_order(prop.ticker, "yes", sell_at, count, "limit")
-                profit = count * (sell_at - yes_cents) / 100
-                log.info(f"  HR SOLD @ {sell_at}¢  profit=${profit:.2f}")
-                tg_fn(
-                    f"SOLD HR — {event.player_name}\n"
-                    f"Sell: {sell_at}¢  profit=${profit:.2f}"
-                )
-                return
-            except Exception as e:
-                log.warning(f"  Sell retry: {e}")
-                await asyncio.sleep(3)
-        log.warning("  Sell timed out — holding to settlement")
+# ── MLB execution ──────────────────────────────────────────────────────────────
 
-    asyncio.create_task(flip())
-
-
-async def execute_hit(
+async def execute_mlb(
     event: PropEvent,
-    prop,
+    cache: PropCache,
     kalshi: KalshiClient,
     cfg: dict,
     tg_fn,
-    dry_run: bool = False,
+    fired: set,
+    dry_run: bool,
 ) -> None:
-    """Buy hits market YES at 99c IOC — hold to $1.00 settlement."""
-    buy_cents = cfg["hits_buy_cents"]
-    max_bet   = cfg["max_hits_bet"]
+    home_cfg = cfg.get("home", cfg)
+    max_buy  = home_cfg.get("max_buy_cents", 99)
+    max_bet  = float(home_cfg.get("max_hr_bet", 5.0))
 
-    # Cancel any resting orders first
-    if not dry_run:
-        await kalshi.cancel_resting_orders()
+    if event.event_type == "home_run":
+        key = f"{date.today()}:HR:1:{event.player_name}"
+        if key in fired:
+            return
+        fired.add(key)
+        prop = cache.get_hr_ticker(event.player_name)
+        if not prop:
+            log.info(f"[MLB HR] {event.player_name} — no market")
+            return
+        log.info(f"[MLB HR] {event.player_name}  inn={event.inning}{event.half[0].upper()}")
+        await buy_and_hold(prop.ticker, event.player_name, f"MLB HR",
+                           max_buy, max_bet, kalshi, tg_fn, dry_run, event.feed_detected_at)
 
-    balance = await kalshi.get_balance() if not dry_run else max_bet
-    spend   = min(balance, max_bet)
-    count   = int(spend / (buy_cents / 100))
+    elif event.event_type == "hit":
+        for threshold in (1, 2, 3):
+            key = f"{date.today()}:HIT:{threshold}:{event.player_name}"
+            if key in fired:
+                continue
+            prop = cache.get_hit_ticker(event.player_name, threshold)
+            if not prop:
+                fired.add(key)
+                continue
+            log.info(f"[MLB HIT {threshold}+] {event.player_name}  inn={event.inning}{event.half[0].upper()}")
+            max_hit_bet = float(home_cfg.get("max_hits_bet", 5.0))
+            await buy_and_hold(prop.ticker, event.player_name, f"MLB HIT {threshold}+",
+                               max_buy, max_hit_bet, kalshi, tg_fn, dry_run, event.feed_detected_at)
+            fired.add(key)
 
-    if count < 1:
-        log.info(f"  HIT: insufficient balance (${balance:.2f})")
+
+# ── NBA execution ──────────────────────────────────────────────────────────────
+
+async def execute_nba(
+    event: NBAStatEvent,
+    cache: NBAPropCache,
+    kalshi: KalshiClient,
+    cfg: dict,
+    tg_fn,
+    fired: set,
+    dry_run: bool,
+) -> None:
+    key = f"{date.today()}:NBA:{event.stat_type}:{event.threshold}:{event.player_name}"
+    if key in fired:
+        return
+    fired.add(key)
+
+    nba_cfg = cfg.get("nba", cfg.get("home", cfg))
+    max_buy = int(nba_cfg.get("max_buy_cents", 99))
+    max_bet = float(nba_cfg.get("max_bet", nba_cfg.get("max_hr_bet", 5.0)))
+
+    prop = cache.lookup(event.player_name, event.stat_type, event.threshold)
+    if not prop:
+        log.info(f"[NBA] {event.player_name} {event.stat_type} {event.threshold}+ — no Kalshi market")
         return
 
-    cost       = count * buy_cents / 100
-    detect_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-    latency_ms = (time.monotonic() - event.feed_detected_at) * 1000
-
+    label = f"NBA {event.stat_type.upper()} {event.threshold}+"
     log.info(
-        f"  HIT BUY ({prop.threshold}+): {count} @ {buy_cents}¢  "
-        f"cost=${cost:.2f}  latency={latency_ms:.0f}ms"
+        f"[NBA] {event.player_name}  {event.stat_type} {event.threshold}+  "
+        f"(has {event.current_value})  Q{event.period} {event.clock}"
     )
-
-    if not dry_run:
-        await kalshi.place_order(prop.ticker, "yes", buy_cents, count, "ioc")
-
-    expected = count * (100 - buy_cents) / 100
-    tg_fn(
-        f"BUY HIT {prop.threshold}+ — {event.player_name}\n"
-        f"Ticker: {prop.ticker}\n"
-        f"Contracts: {count} @ {buy_cents}¢\n"
-        f"Cost: ${cost:.2f}  |  Expected: +${expected:.2f}\n"
-        f"Detected: {detect_str}\n"
-        f"Latency: {latency_ms:.0f}ms\n"
-        f"{'[DRY RUN]' if dry_run else ''}"
-    )
+    await buy_and_hold(prop.ticker, event.player_name, label,
+                       max_buy, max_bet, kalshi, tg_fn, dry_run, event.feed_detected_at)
 
 
-# ── Cache refresh loop ─────────────────────────────────────────────────────────
+# ── Background loops ───────────────────────────────────────────────────────────
 
-async def cache_refresh_loop(cache: PropCache, kalshi: KalshiClient) -> None:
-    """Rebuild prop cache every 30 minutes."""
+async def cache_refresh_loop(mlb_cache: PropCache, nba_cache: NBAPropCache,
+                              kalshi: KalshiClient) -> None:
     while True:
         await asyncio.sleep(1800)
         try:
-            await cache.build(kalshi)
-            log.info("Cache refreshed")
+            await mlb_cache.build(kalshi)
+            await nba_cache.build(kalshi)
+            log.info("Caches refreshed")
         except Exception as e:
             log.warning(f"Cache refresh error: {e}")
 
 
-# ── Daily summary ──────────────────────────────────────────────────────────────
-
-async def daily_summary_loop(tg_fn, kalshi: KalshiClient, trader: PaperTrader) -> None:
+async def daily_summary_loop(tg_fn, kalshi: KalshiClient) -> None:
     while True:
         now    = datetime.now()
         target = now.replace(hour=23, minute=59, second=0, microsecond=0)
@@ -219,132 +220,102 @@ async def daily_summary_loop(tg_fn, kalshi: KalshiClient, trader: PaperTrader) -
             target += timedelta(days=1)
         await asyncio.sleep((target - now).total_seconds())
         balance = await kalshi.get_balance()
-        trader.summary()
-        tg_fn(
-            f"Daily Summary {date.today()}\n"
-            f"Balance: ${balance:.2f}\n"
-            f"Trades: {len(trader._trades)}"
-        )
+        tg_fn(f"Daily Summary {date.today()}\nBalance: ${balance:.2f}")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-async def run(cfg: dict, dry_run: bool = False) -> None:
+async def run(cfg: dict, dry_run: bool, mlb: bool, nba: bool) -> None:
     mode  = cfg.get("mode", "paper")
-    live  = (mode == "live") and not dry_run
-    paper = not live
+    paper = (mode != "live") or dry_run
 
-    tg_token   = cfg.get("telegram_token", "")
-    tg_chat    = cfg.get("telegram_chat_id", "")
-    tg_fn      = lambda msg: tg(tg_token, tg_chat, msg)
-    poll_secs  = float(cfg.get("poll_interval_sec", 0.5))
+    tg_token = cfg.get("telegram_token", "")
+    tg_chat  = cfg.get("telegram_chat_id", "")
+    tg_fn    = lambda msg: tg(tg_token, tg_chat, msg)
 
-    log.info(f"MLB Arber  mode={'DRY RUN' if dry_run else mode}  poll={poll_secs}s")
+    log.info(f"Arber  mode={'DRY RUN' if dry_run else mode}  MLB={mlb}  NBA={nba}")
 
     kalshi = KalshiClient(
         key_id=cfg.get("kalshi_key_id", ""),
         private_key_path=cfg.get("kalshi_private_key_path", ""),
         paper_mode=paper,
     )
-    trader = PaperTrader(
-        max_trade_usd=max(cfg.get("max_hr_bet", 2), cfg.get("max_hits_bet", 2)),
-        min_edge_cents=100 - cfg.get("max_buy_cents", 96),
+
+    # ── Build caches ──────────────────────────────────────────────────────────
+    mlb_cache = PropCache()
+    nba_cache = NBAPropCache()
+
+    await asyncio.gather(
+        mlb_cache.build(kalshi) if mlb else asyncio.sleep(0),
+        nba_cache.build(kalshi) if nba else asyncio.sleep(0),
     )
 
-    # ── Build prop cache ──────────────────────────────────────────────────────
-    cache = PropCache()
-    await cache.build(kalshi)
+    nba_cfg = cfg.get("nba", {})
+    tg_fn(
+        f"Bot started ({'DRY RUN' if dry_run else mode.upper()})\n"
+        f"MLB: {len(mlb_cache.hr_cache)} HR + {len(mlb_cache.hits_cache)} hits markets\n"
+        f"NBA: {len(nba_cache)} prop markets\n"
+        f"NBA max bet: ${nba_cfg.get('max_bet', 5)}"
+    )
 
-    if not cache.hr_cache and not cache.hits_cache:
-        log.warning("No Kalshi prop markets found — check credentials or series tickers")
-        tg_fn("WARNING: No Kalshi prop markets found")
-    else:
-        msg = (
-            f"Bot started ({'DRY RUN' if dry_run else mode.upper()})\n"
-            f"HR markets: {len(cache.hr_cache)}\n"
-            f"Hits markets: {len(cache.hits_cache)}\n"
-            f"Poll: {poll_secs}s"
-        )
-        log.info(msg)
-        tg_fn(msg)
+    asyncio.create_task(cache_refresh_loop(mlb_cache, nba_cache, kalshi))
+    asyncio.create_task(daily_summary_loop(tg_fn, kalshi))
 
-    # ── Background tasks ──────────────────────────────────────────────────────
-    asyncio.create_task(cache_refresh_loop(cache, kalshi))
-    asyncio.create_task(daily_summary_loop(tg_fn, kalshi, trader))
+    fired: set[str] = set()
 
-    # ── Today's games ─────────────────────────────────────────────────────────
-    games = get_todays_games()
-    game_pks = [g.game_pk for g in games]
-    log.info(f"Watching {len(games)} games today")
-    for g in games:
-        log.info(f"  [{g.game_pk}] {g.away_team} @ {g.home_team}  ({g.status})")
+    # ── MLB stream ────────────────────────────────────────────────────────────
+    async def run_mlb():
+        games    = get_todays_games()
+        game_pks = [g.game_pk for g in games]
+        log.info(f"MLB: watching {len(games)} games")
+        for g in games:
+            log.info(f"  [{g.game_pk}] {g.away_team} @ {g.home_team}  ({g.status})")
+        poll = float(cfg.get("poll_interval_sec", 0.5))
+        async for event in stream_all_games(game_pks, poll_interval=poll):
+            await execute_mlb(event, mlb_cache, kalshi, cfg, tg_fn, fired, dry_run)
 
-    # ── Event loop ────────────────────────────────────────────────────────────
-    fired: set[str] = set()   # "DATE:TYPE:THRESHOLD:PLAYER" — prevent double-fire
+    # ── NBA stream ────────────────────────────────────────────────────────────
+    async def run_nba():
+        games    = get_todays_nba_games()
+        game_ids = [g.game_id for g in games]
+        log.info(f"NBA: watching {len(games)} games")
+        for g in games:
+            log.info(f"  [{g.game_id}] {g.away_team} @ {g.home_team}  {g.status}")
+        async for event in stream_nba_games(game_ids, poll_interval=1.0):
+            await execute_nba(event, nba_cache, kalshi, cfg, tg_fn, fired, dry_run)
 
-    async for event in stream_all_games(game_pks, poll_interval=poll_secs):
-        detected_ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    tasks = []
+    if mlb:
+        tasks.append(asyncio.create_task(run_mlb()))
+    if nba:
+        tasks.append(asyncio.create_task(run_nba()))
 
-        # ── Home run ─────────────────────────────────────────────────────────
-        if event.event_type == "home_run":
-            key = f"{date.today()}:HR:1:{event.player_name}"
-            if key in fired:
-                continue
-            fired.add(key)
+    if not tasks:
+        log.error("No sport selected — use --mlb-only or --nba-only or both")
+        return
 
-            prop = cache.get_hr_ticker(event.player_name)
-            if not prop:
-                log.info(f"[HR] {event.player_name} — no Kalshi market found")
-                tg_fn(f"HR (no market): {event.player_name}\nInning {event.inning}")
-                continue
-
-            log.info(
-                f"[HR] {event.player_name}  inning={event.inning}{event.half[0].upper()}  "
-                f"score={event.away_score}-{event.home_score}"
-            )
-            await execute_hr(event, prop, kalshi, cfg, tg_fn, dry_run)
-
-        # ── Hit — fire at 1+, 2+, 3+ thresholds ─────────────────────────────
-        elif event.event_type == "hit":
-            for threshold in (1, 2, 3):
-                key = f"{date.today()}:HIT:{threshold}:{event.player_name}"
-                if key in fired:
-                    continue
-
-                prop = cache.get_hit_ticker(event.player_name, threshold)
-                if not prop:
-                    fired.add(key)   # no market — skip permanently
-                    continue
-
-                log.info(
-                    f"[HIT {threshold}+] {event.player_name}  "
-                    f"inning={event.inning}{event.half[0].upper()}"
-                )
-                await execute_hit(event, prop, kalshi, cfg, tg_fn, dry_run)
-                fired.add(key)
-
-        else:
-            log.debug(
-                f"[{event.game_pk}] {event.raw_event:20s} {event.player_name} "
-                f"inn={event.inning}{event.half[0].upper()}"
-            )
-
+    await asyncio.gather(*tasks)
     await kalshi.close()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="MLB Arber — Kalshi prop latency bot")
-    parser.add_argument("--live",    action="store_true", help="Live trading mode")
-    parser.add_argument("--dry-run", action="store_true", help="Live mode but skip order submission")
-    parser.add_argument("--config",  default="config.yaml")
+    parser = argparse.ArgumentParser(description="MLB + NBA Kalshi prop latency bot")
+    parser.add_argument("--live",     action="store_true")
+    parser.add_argument("--dry-run",  action="store_true")
+    parser.add_argument("--mlb-only", action="store_true")
+    parser.add_argument("--nba-only", action="store_true")
+    parser.add_argument("--config",   default="config.yaml")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     if args.live:
         cfg["mode"] = "live"
 
+    mlb = not args.nba_only
+    nba = not args.mlb_only
+
     try:
-        asyncio.run(run(cfg, dry_run=args.dry_run))
+        asyncio.run(run(cfg, dry_run=args.dry_run, mlb=mlb, nba=nba))
     except KeyboardInterrupt:
         log.info("Stopped")
 

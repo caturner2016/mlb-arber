@@ -30,5 +30,11 @@ game:
   max_hr_bet:    5.00
   max_hits_bet:  5.00
 
+# ── NBA bot settings ──────────────────────────────
+# Small bets — stat corrections are a real risk in NBA
+nba:
+  max_buy_cents: 99     # buy YES up to 99¢, hold to $1.00 settlement
+  max_bet:       5.00   # keep small due to correction risk
+
 # ── Risk ──────────────────────────────────────────
 daily_loss_limit: 200
