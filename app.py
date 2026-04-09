@@ -133,6 +133,7 @@ async def get_balance():
 class TradeRequest(BaseModel):
     player_name: str   # lowercase, as stored in cache
     trade_type: str    # "home_run" or "hit"
+    threshold: int = 1 # for hits: 1, 2, or 3
 
 
 class TradeResult(BaseModel):
@@ -163,7 +164,8 @@ async def place_trade(req: TradeRequest):
         sell_at = cfg.get("sell_cents", 99)
         max_bet = float(cfg.get("max_hr_bet", 5.0))
     elif req.trade_type == "hit":
-        prop = cache.get_hit_ticker(player_lower, 1)
+        threshold = max(1, min(3, req.threshold))
+        prop = cache.get_hit_ticker(player_lower, threshold)
         max_buy = cfg.get("max_buy_cents", 96)
         sell_at = 99
         max_bet = float(cfg.get("max_hits_bet", 5.0))

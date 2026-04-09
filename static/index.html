@@ -233,6 +233,35 @@
   let selectedPlayer = null;
   let mode = 'paper';
 
+  // Hit counts per player — persisted to localStorage so refresh doesn't reset
+  // { "aaron judge": 1, "shohei ohtani": 2, ... }
+  const HIT_KEY = 'mlbarber_hits_' + new Date().toISOString().slice(0,10);
+  let hitCounts = JSON.parse(localStorage.getItem(HIT_KEY) || '{}');
+
+  function getHitCount(playerName) {
+    return hitCounts[playerName.toLowerCase()] || 0;
+  }
+  function incrementHit(playerName) {
+    const k = playerName.toLowerCase();
+    hitCounts[k] = (hitCounts[k] || 0) + 1;
+    localStorage.setItem(HIT_KEY, JSON.stringify(hitCounts));
+  }
+
+  function nextHitThreshold(playerName) {
+    return getHitCount(playerName) + 1;  // next threshold to trade (1, 2, or 3)
+  }
+
+  function updateHitButton() {
+    if (!selectedPlayer) return;
+    const threshold = nextHitThreshold(selectedPlayer.name);
+    const btn = document.getElementById('btn-hit');
+    const labels = { 1: '1ST HIT', 2: '2ND HIT', 3: '3RD HIT' };
+    const label  = labels[threshold] || 'HITS DONE';
+    const avail  = selectedPlayer.has_hit && threshold <= 3;
+    btn.disabled = !avail;
+    btn.innerHTML = `🔵 ${label}<small>buy ≤96¢ → sell 99¢</small>`;
+  }
+
   // ── Init ───────────────────────────────────────────────────────────────────
   async function init() {
     await Promise.all([loadPlayers(), loadBalance()]);
@@ -272,7 +301,7 @@
         <span>${p.name}</span>
         <span class="player-badges">
           ${p.has_hr  ? '<span class="badge badge-hr">HR</span>' : ''}
-          ${p.has_hit ? '<span class="badge badge-hit">HIT</span>' : ''}
+          ${p.has_hit ? `<span class="badge badge-hit">${getHitCount(p.name) > 0 ? getHitCount(p.name) + ' HIT' : 'HIT'}</span>` : ''}
         </span>
       </div>
     `).join('');
@@ -294,9 +323,9 @@
     disp.textContent = player.name;
     disp.classList.add('active');
 
-    // Enable/disable buttons based on available markets
-    document.getElementById('btn-hit').disabled = !player.has_hit;
-    document.getElementById('btn-hr').disabled  = !player.has_hr;
+    // Enable/disable buttons based on available markets + hit count
+    document.getElementById('btn-hr').disabled = !player.has_hr;
+    updateHitButton();
 
     // Re-render list to show selection
     const q = document.getElementById('search').value.toLowerCase();
@@ -313,6 +342,9 @@
   // ── Trade ──────────────────────────────────────────────────────────────────
   async function trade(type) {
     if (!selectedPlayer) return;
+
+    const threshold = type === 'hit' ? nextHitThreshold(selectedPlayer.name) : 1;
+    if (type === 'hit' && threshold > 3) return;
 
     const btn = type === 'hit' ? document.getElementById('btn-hit') : document.getElementById('btn-hr');
     btn.disabled = true;
@@ -333,6 +365,7 @@
         body: JSON.stringify({
           player_name: selectedPlayer.name.toLowerCase(),
           trade_type: type,
+          threshold: threshold,
         }),
       });
 
@@ -358,6 +391,11 @@
           <div class="result-row"><span class="label">Latency</span><span class="value">${d.latency_ms}ms server / ${roundtrip}ms total</span></div>
         `;
 
+        // Track hit count and update button
+        if (type === 'hit') {
+          incrementHit(selectedPlayer.name);
+          updateHitButton();
+        }
         // Refresh balance after trade
         loadBalance();
       }
@@ -366,8 +404,9 @@
       resultEl.innerHTML = `<div class="result-title error-title">❌ Network error — check connection</div>`;
     }
 
-    // Re-enable button
-    btn.disabled = (type === 'hit' ? !selectedPlayer?.has_hit : !selectedPlayer?.has_hr);
+    // Re-enable button (hits button state managed by updateHitButton)
+    if (type === 'home_run') btn.disabled = !selectedPlayer?.has_hr;
+    else updateHitButton();
   }
 
   init();
