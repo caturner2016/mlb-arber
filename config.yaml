@@ -19,10 +19,10 @@ poll_interval_sec: 0.5        # MLB feed poll (timecode trick = tiny responses)
 # ── HR trade settings ─────────────────────────────
 max_buy_cents: 96             # only buy YES if ask <= this
 sell_cents:    98             # flip HRs at this price
-max_hr_bet:    2.00           # max $ per HR trade
+max_hr_bet:    5.00           # max $ per HR trade
 
 # ── Hits trade settings ───────────────────────────
-max_hits_bet:  2.00           # max $ per hits trade
+max_hits_bet:  5.00           # max $ per hits trade
 hits_buy_cents: 99            # buy hits at 99c (IOC — hold to settlement)
 
 # ── Risk ──────────────────────────────────────────
