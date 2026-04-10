@@ -2,16 +2,25 @@
 """
 HiBid → eBay Resell Scout
 
-Searches HiBid auctions for clothing items, looks up what the same items
-actually sold for on eBay, and ranks opportunities by estimated profit.
+Searches HiBid auctions for items (clothing, records/vinyl, etc.),
+looks up what the same items actually sold for on eBay, and ranks
+opportunities by estimated profit.
 
 Usage:
   python hibid_scout.py "levi 501 jeans"
+  python hibid_scout.py "vinyl record lot jazz"
+  python hibid_scout.py "led zeppelin lp" --shipping 5 --buyer-premium 18
   python hibid_scout.py "nike vintage jacket" --max 30 --min-profit 10
-  python hibid_scout.py "ralph lauren polo" --shipping 5
 
-eBay fee assumed: 13.25% (Clothing & Accessories category final value fee).
-Adjust --shipping to match your typical cost for the category.
+eBay fee assumed: 13.25% final value fee (Clothing & Music categories).
+Adjust --shipping for your typical cost:
+  Clothing  : ~$5–7 (poly mailer + label)
+  Single LP : ~$4–5 (USPS Media Mail in record mailer)
+  Record lot: ~$8–15 (Priority flat-rate box)
+
+HiBid buyer's premium:
+  Most HiBid auctions add 15–18% on top of the winning bid.
+  Always check the specific auction's terms. Use --buyer-premium to set it.
 """
 
 from __future__ import annotations
@@ -31,8 +40,9 @@ from bs4 import BeautifulSoup
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-EBAY_FEE_RATE    = 0.1325   # 13.25% final value fee for Clothing & Accessories
-DEFAULT_SHIPPING = 6.00     # conservative estimate; adjust per item weight
+EBAY_FEE_RATE        = 0.1325   # 13.25% final value fee (Clothing & Music categories)
+DEFAULT_SHIPPING     = 6.00     # conservative estimate; adjust per item weight
+DEFAULT_BUYER_PREMIUM = 0.0     # HiBid buyer's premium — set via --buyer-premium
 
 HEADERS = {
     "User-Agent": (
@@ -325,30 +335,47 @@ def search_ebay_sold(query: str) -> EbaySoldData:
 
 # ── Profit math ────────────────────────────────────────────────────────────────
 
+def total_cost(hibid_bid: float, buyer_premium_pct: float) -> float:
+    """What you actually pay: winning bid + buyer's premium."""
+    return hibid_bid * (1 + buyer_premium_pct / 100)
+
+
 def estimate_profit(
     hibid_bid: float,
     ebay_median: float,
     shipping_cost: float = DEFAULT_SHIPPING,
+    buyer_premium_pct: float = DEFAULT_BUYER_PREMIUM,
 ) -> float:
     """
-    Net profit after eBay final value fee and shipping.
-    Does not include purchase-side shipping (factor that in manually
-    if the HiBid lot has a buyer's premium or shipping charge).
+    Net profit after eBay final value fee, shipping, and HiBid buyer's premium.
+    Does not include any inbound shipping on the HiBid lot itself — add that
+    to --shipping if you're paying for lot pickup/delivery.
     """
+    cost = total_cost(hibid_bid, buyer_premium_pct)
     ebay_net = ebay_median * (1 - EBAY_FEE_RATE) - shipping_cost
-    return ebay_net - hibid_bid
+    return ebay_net - cost
 
 
 # ── Display ────────────────────────────────────────────────────────────────────
 
-def print_opportunity(lot: HiBidLot, sold: EbaySoldData, profit: float) -> None:
-    roi = (profit / lot.current_bid * 100) if lot.current_bid > 0 else 0
-    bar = "█" * min(int(roi / 10), 20)  # visual ROI bar, capped at 200%
+def print_opportunity(
+    lot: HiBidLot,
+    sold: EbaySoldData,
+    profit: float,
+    buyer_premium_pct: float,
+) -> None:
+    paid = total_cost(lot.current_bid, buyer_premium_pct)
+    roi  = (profit / paid * 100) if paid > 0 else 0
+    bar  = "█" * min(int(roi / 10), 20)   # visual ROI bar, capped at 200%
     print(f"  {'─'*56}")
     print(f"  {lot.title[:56]}")
     if lot.auctioneer:
         print(f"  Auctioneer : {lot.auctioneer}")
-    print(f"  HiBid bid  : ${lot.current_bid:6.2f}   ends: {lot.end_time or 'unknown'}")
+    if buyer_premium_pct:
+        print(f"  HiBid bid  : ${lot.current_bid:6.2f}  +{buyer_premium_pct:.0f}% premium "
+              f"= ${paid:.2f} total   ends: {lot.end_time or 'unknown'}")
+    else:
+        print(f"  HiBid bid  : ${lot.current_bid:6.2f}   ends: {lot.end_time or 'unknown'}")
     print(f"  eBay sold  : ${sold.median:6.2f} median  "
           f"(${sold.low:.2f}–${sold.high:.2f}, {sold.count} sales)")
     print(f"  Est. profit: ${profit:6.2f}   ROI {roi:.0f}%  {bar}")
@@ -369,6 +396,9 @@ def main() -> None:
                         help="Min estimated profit to show (default $5)")
     parser.add_argument("--shipping",   type=float, default=DEFAULT_SHIPPING,
                         help=f"Your shipping cost assumption (default ${DEFAULT_SHIPPING})")
+    parser.add_argument("--buyer-premium", type=float, default=DEFAULT_BUYER_PREMIUM,
+                        help="HiBid buyer's premium %% added to winning bid (default 0). "
+                             "Check the specific auction's terms — commonly 15–18%%.")
     parser.add_argument("--ebay-words", type=int,   default=6,
                         help="How many words of the lot title to use for eBay search (default 6)")
     args = parser.parse_args()
@@ -377,6 +407,8 @@ def main() -> None:
     print(f"  HiBid → eBay Scout")
     print(f"  Query    : {args.query}")
     print(f"  eBay fee : {EBAY_FEE_RATE*100:.2f}%   Shipping: ${args.shipping:.2f}")
+    if args.buyer_premium:
+        print(f"  Buyer's premium: {args.buyer_premium:.1f}%")
     print(f"  Min profit filter: ${args.min_profit:.2f}")
     print(f"{'='*60}\n")
 
@@ -405,7 +437,7 @@ def main() -> None:
         if sold.count == 0:
             continue
 
-        profit = estimate_profit(lot.current_bid, sold.median, args.shipping)
+        profit = estimate_profit(lot.current_bid, sold.median, args.shipping, args.buyer_premium)
         opportunities.append((profit, lot, sold))
 
     opportunities.sort(key=lambda x: x[0], reverse=True)
@@ -413,7 +445,7 @@ def main() -> None:
     shown = 0
     for profit, lot, sold in opportunities:
         if profit >= args.min_profit:
-            print_opportunity(lot, sold, profit)
+            print_opportunity(lot, sold, profit, args.buyer_premium)
             shown += 1
 
     print(f"\n  {'─'*56}")
