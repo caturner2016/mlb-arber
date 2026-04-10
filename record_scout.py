@@ -411,7 +411,7 @@ _SINGLE_RECORD_PATTERNS = [
     # "Artist - Title" or "Artist: Title" with no collection words
     re.compile(r"^[A-Za-z\s\.'&,]+\s*[-:]\s*[A-Za-z\s\.'&,\(\)]+$"),
     # Ends with format indicator suggesting one item: "... LP", "... 45", "... 7\""
-    re.compile(r"\b(single|45\s*rpm|7["\"]|one\s+lp|one\s+album|one\s+record)\b", re.I),
+    re.compile(r'\b(single|45\s*rpm|7["\']|one\s+lp|one\s+album|one\s+record)\b', re.I),
 ]
 
 # If title contains a number >= 2 followed by a record-type word, it's a lot
