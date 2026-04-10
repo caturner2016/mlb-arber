@@ -397,6 +397,67 @@ def fetch_lot_detail(lot: RecordLot) -> None:
         pass
 
 
+# ── Collection vs. single-record filter ───────────────────────────────────────
+
+# Strong signals that a lot IS a collection/tote
+_COLLECTION_WORDS = re.compile(
+    r"\b(lot|collection|tote|box|crate|stack|bundle|bulk|assorted|mixed|misc"
+    r"|various|estate|group|set|run|batch|pounds? of|lbs? of)\b",
+    re.I,
+)
+
+# Strong signals that a lot is a SINGLE record (skip these)
+_SINGLE_RECORD_PATTERNS = [
+    # "Artist - Title" or "Artist: Title" with no collection words
+    re.compile(r"^[A-Za-z\s\.'&,]+\s*[-:]\s*[A-Za-z\s\.'&,\(\)]+$"),
+    # Ends with format indicator suggesting one item: "... LP", "... 45", "... 7\""
+    re.compile(r"\b(single|45\s*rpm|7["\"]|one\s+lp|one\s+album|one\s+record)\b", re.I),
+]
+
+# If title contains a number >= 2 followed by a record-type word, it's a lot
+_QUANTITY_RE = re.compile(
+    r"\b([2-9]\d*|[1-9]\d+)\s*\+?\s*(?:records?|albums?|lps?|vinyls?|45s?|singles?)\b",
+    re.I,
+)
+
+
+def is_collection(lot: RecordLot) -> bool:
+    """
+    Return True if the lot looks like a collection/tote rather than a
+    single individual record.
+
+    Keeps anything that has:
+      - an explicit collection/tote/lot/box/estate keyword
+      - a quantity like "50 records" or "12 LPs"
+      - 3+ commas in the title (suggesting a list of items)
+
+    Rejects titles that look like a single "Artist - Album" entry with
+    none of the above signals.
+    """
+    title = lot.title.strip()
+    title_lower = title.lower()
+
+    # Explicit collection keyword → keep
+    if _COLLECTION_WORDS.search(title_lower):
+        return True
+
+    # Explicit quantity → keep
+    if _QUANTITY_RE.search(title):
+        return True
+
+    # Title looks like a list of artists/albums (many commas) → keep
+    if title.count(",") >= 2:
+        return True
+
+    # Single-record pattern with no collection signal → skip
+    for pat in _SINGLE_RECORD_PATTERNS:
+        if pat.search(title):
+            return False
+
+    # Default: keep if uncertain (better to show too many than miss a tote)
+    return True
+
+
 # ── Scoring ────────────────────────────────────────────────────────────────────
 
 def _record_count_from_text(text: str) -> int:
@@ -570,9 +631,21 @@ def main() -> None:
             print(f"  https://hibid.com/catalog/search?q={q_enc}&zip={args.zip}&miles={args.miles}")
         return
 
-    print(f"\nFound {len(all_lots)} unique lots. Fetching details and scoring...")
+    print(f"\nFound {len(all_lots)} unique lots. Filtering singles...")
 
-    for lot in all_lots:
+    # Drop individual single-record listings before fetching detail pages
+    collections = [lot for lot in all_lots if is_collection(lot)]
+    singles_removed = len(all_lots) - len(collections)
+    if singles_removed:
+        print(f"  Removed {singles_removed} single-record listing(s) — kept {len(collections)} collections.")
+
+    if not collections:
+        print("All results looked like individual records. Try --query with different terms.")
+        return
+
+    print(f"Fetching details and scoring {len(collections)} collection(s)...")
+
+    for lot in collections:
         if not lot.description and lot.url:
             fetch_lot_detail(lot)
             time.sleep(0.25)
@@ -585,7 +658,7 @@ def main() -> None:
 
     # Filter: bid ≤ max, score ≥ min, and within radius (if distance known)
     candidates: list[RecordLot] = []
-    for lot in all_lots:
+    for lot in collections:
         if lot.current_bid > args.max_bid:
             continue
         if lot.score < args.min_score:
@@ -623,7 +696,8 @@ def main() -> None:
 
     print(f"\n{'─'*62}")
     print(f"  {len(candidates)} lot(s) shown  |  "
-          f"filtered: {len(all_lots) - len(candidates)}")
+          f"{singles_removed} singles removed  |  "
+          f"{len(collections) - len(candidates)} below threshold")
     if args.no_ebay:
         print("  Re-run without --no-ebay for per-artist eBay pricing.")
     print()
