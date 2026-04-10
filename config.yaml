@@ -36,6 +36,13 @@ nba:
   max_buy_cents: 99     # buy YES up to 99¢, hold to $1.00 settlement
   max_bet:       5.00   # keep small due to correction risk
 
+# ── Pregame model settings ────────────────────────
+# Auto-bets each morning based on model vs Kalshi price
+model:
+  max_buy_cents:  70    # only bet if Kalshi YES ask ≤ 70¢ (need edge)
+  max_bet:       20.00  # max $ per pregame model bet
+  min_edge_cents: 8     # only bet when model is ≥ 8¢ above Kalshi
+
 # ── Weather bot settings ──────────────────────────
 weather:
   max_buy_cents:              80    # only buy if Kalshi YES ask ≤ 80¢
