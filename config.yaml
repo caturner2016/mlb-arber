@@ -1,0 +1,49 @@
+# ─────────────────────────────────────────────────
+# MLB Arber — config
+# ─────────────────────────────────────────────────
+
+mode: live   # paper | live
+
+# ── Kalshi credentials ────────────────────────────
+kalshi_key_id:           ""
+kalshi_private_key_path: ""
+
+# ── Telegram alerts ───────────────────────────────
+telegram_token:   ""
+telegram_chat_id: ""
+
+# ── Bot (main.py) feed speed ──────────────────────
+poll_interval_sec: 0.5
+
+# ── AT HOME profile ───────────────────────────────
+# Buy up to 99¢ — hold to $1.00 settlement, no flip needed
+home:
+  max_buy_cents: 99
+  max_hr_bet:    5.00
+  max_hits_bet:  5.00
+
+# ── AT THE GAME profile ───────────────────────────
+# You see it first — buy up to 96¢, flip at 99¢
+game:
+  max_buy_cents: 96
+  sell_cents:    99
+  max_hr_bet:    5.00
+  max_hits_bet:  5.00
+
+# ── NBA bot settings ──────────────────────────────
+# Small bets — stat corrections are a real risk in NBA
+nba:
+  max_buy_cents: 99     # buy YES up to 99¢, hold to $1.00 settlement
+  max_bet:       5.00   # keep small due to correction risk
+
+# ── Weather bot settings ──────────────────────────
+weather:
+  max_buy_cents:              80    # only buy if Kalshi YES ask ≤ 80¢
+  max_bet:                   10.00  # max $ per weather trade
+  poll_interval_sec:          60    # NWS updates ~hourly, 60s is plenty
+  min_confidence_margin_f:    1.0   # forecast must be ≥1°F inside range
+  rain_buy_yes_threshold_pct: 80    # buy YES rain if NWS PoP ≥ 80%
+  rain_buy_no_threshold_pct:  15    # skip rain if PoP ≤ 15%
+
+# ── Risk ──────────────────────────────────────────
+daily_loss_limit: 200
