@@ -86,8 +86,6 @@ def profile_cfg(cfg: dict, profile: str) -> dict:
     return {
         "max_buy_cents": p.get("max_buy_cents", cfg.get("max_buy_cents", 96)),
         "sell_cents":    p.get("sell_cents",    cfg.get("sell_cents",    99)),
-        "max_hr_bet":    float(p.get("max_hr_bet",   cfg.get("max_hr_bet",   5.0))),
-        "max_hits_bet":  float(p.get("max_hits_bet", cfg.get("max_hits_bet", 5.0))),
     }
 
 cfg: dict = {}
@@ -200,16 +198,14 @@ async def place_trade(req: TradeRequest):
     pcfg         = profile_cfg(cfg, profile)
 
     if req.trade_type == "home_run":
-        prop     = cache.get_hr_ticker(player_lower)
-        max_buy  = pcfg["max_buy_cents"]
-        sell_at  = pcfg["sell_cents"]
-        max_bet  = pcfg["max_hr_bet"]
+        prop    = cache.get_hr_ticker(player_lower)
+        max_buy = pcfg["max_buy_cents"]
+        sell_at = pcfg["sell_cents"]
     elif req.trade_type == "hit":
         threshold = max(1, min(3, req.threshold))
         prop      = cache.get_hit_ticker(player_lower, threshold)
         max_buy   = pcfg["max_buy_cents"]
         sell_at   = 99
-        max_bet   = pcfg["max_hits_bet"]
     else:
         raise HTTPException(400, f"Unknown trade_type: {req.trade_type}")
 
@@ -221,9 +217,8 @@ async def place_trade(req: TradeRequest):
         raise HTTPException(409, f"Market above {max_buy}¢ — no edge remaining")
 
     yes_cents, qty = result
-    balance = await kalshi.get_balance() if not paper else max_bet
-    spend   = min(balance, max_bet)
-    count   = min(qty, int(spend / (yes_cents / 100)))
+    balance = await kalshi.get_balance() if not paper else 1000.0
+    count   = min(qty, int(balance / (yes_cents / 100)))
 
     if count < 1:
         raise HTTPException(409, "Insufficient balance or no contracts available")
