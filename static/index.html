@@ -158,6 +158,13 @@
   </button>
 </div>
 
+<div style="text-align:center;margin-bottom:12px">
+  <button id="btn-test" disabled onclick="testTrade()"
+    style="background:#333;color:#aaa;border:1px dashed #555;border-radius:10px;padding:10px 28px;font-size:13px;cursor:pointer;letter-spacing:.5px">
+    🧪 Test (1 contract)
+  </button>
+</div>
+
 <div id="result"></div>
 
 <script>
@@ -260,6 +267,44 @@
     btnHit.innerHTML = `🔵 ${hitLabel}<small>${lbl.hit}</small>`;
     btnHr.disabled   = !selectedPlayer.has_hr;
     btnHr.innerHTML  = `🔴 HOME RUN<small>${lbl.hr}</small>`;
+    document.getElementById('btn-test').disabled = !(selectedPlayer.has_hit || selectedPlayer.has_hr);
+  }
+
+  // ── Test trade (1 contract) ────────────────────────────────────────────────
+  async function testTrade() {
+    if (!selectedPlayer) return;
+    const type = selectedPlayer.has_hit ? 'hit' : 'home_run';
+    const resultEl = document.getElementById('result');
+    resultEl.className = 'loading';
+    resultEl.style.display = 'block';
+    resultEl.innerHTML = '<div class="spinner"></div>';
+    document.getElementById('btn-test').disabled = true;
+
+    try {
+      const resp = await fetch('/api/test-trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ player_name: selectedPlayer.name.toLowerCase(), trade_type: type, profile: currentProfile }),
+      });
+      const d = await resp.json();
+      if (!resp.ok) {
+        resultEl.className = 'error';
+        resultEl.innerHTML = `<div class="result-title err">❌ ${d.detail||'Test failed'}</div>`;
+      } else {
+        resultEl.className = 'success';
+        resultEl.innerHTML = `
+          <div class="result-title">${d.paper?'[PAPER] ':''}🧪 TEST — ${d.player}</div>
+          <div class="result-row"><span class="lbl">Ticker</span><span class="val" style="font-size:11px">${d.ticker}</span></div>
+          <div class="result-row"><span class="lbl">Contracts</span><span class="val">1 @ ${d.avg_price_cents}¢</span></div>
+          <div class="result-row"><span class="lbl">Cost</span><span class="val">$${d.cost_usd.toFixed(2)}</span></div>
+          <div class="result-row"><span class="lbl">Status</span><span class="val green">Order placed ✓</span></div>`;
+        loadBalance();
+      }
+    } catch(e) {
+      resultEl.className = 'error';
+      resultEl.innerHTML = `<div class="result-title err">❌ Network error</div>`;
+    }
+    document.getElementById('btn-test').disabled = false;
   }
 
   // ── Trade ──────────────────────────────────────────────────────────────────
