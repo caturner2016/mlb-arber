@@ -156,6 +156,28 @@ async def get_players():
             "count": len(players)}
 
 
+@app.get("/api/debug")
+async def debug():
+    """Shows what's in the cache and tries a raw Kalshi market search."""
+    hr_sample   = list(cache.hr_cache.items())[:5]
+    hits_sample = list(cache.hits_cache.items())[:5]
+
+    # Try a raw search for any MLB markets
+    raw = {}
+    try:
+        raw = await kalshi.get_markets_search("MLB")
+    except Exception as e:
+        raw = {"error": str(e)}
+
+    return {
+        "hr_markets":   len(cache.hr_cache),
+        "hits_markets": len(cache.hits_cache),
+        "hr_sample":    [{"name": k, "ticker": v.ticker, "ask": v.yes_ask} for k, v in hr_sample],
+        "hits_sample":  [{"key": k, "ticker": v.ticker, "ask": v.yes_ask} for k, v in hits_sample],
+        "raw_search":   raw,
+    }
+
+
 @app.get("/api/balance")
 async def get_balance():
     bal = await kalshi.get_balance()

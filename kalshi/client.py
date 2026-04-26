@@ -147,6 +147,25 @@ class KalshiClient:
                 return {}
             return await resp.json(content_type=None)
 
+    async def get_markets_search(self, query: str) -> dict:
+        """Search markets by title keyword — used for debugging series tickers."""
+        session = await self._session_()
+        path = "/markets"
+        params = {"status": "open", "limit": 10}
+        headers = self._auth_headers("GET", path)
+        async with session.get(
+            KALSHI_BASE + path, headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=10)
+        ) as resp:
+            if resp.status != 200:
+                return {"status": resp.status}
+            data = await resp.json(content_type=None)
+            markets = data.get("markets", [])
+            mlb = [{"ticker": m.get("ticker"), "title": m.get("title"), "series": m.get("series_ticker")}
+                   for m in markets if query.lower() in (m.get("title") or "").lower()
+                   or query.lower() in (m.get("series_ticker") or "").lower()]
+            all_series = list({m.get("series_ticker") for m in markets if m.get("series_ticker")})
+            return {"mlb_matches": mlb, "all_series_sample": all_series[:20], "total_returned": len(markets)}
+
     async def get_balance(self) -> float:
         """Account balance in USD."""
         session = await self._session_()
