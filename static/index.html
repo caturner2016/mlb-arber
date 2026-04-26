@@ -142,7 +142,11 @@
 
 <!-- Player search -->
 <div class="player-wrap">
-  <div class="section-label">Select Batter</div>
+  <div class="section-label" style="display:flex;justify-content:space-between;align-items:center">
+    <span>Select Batter</span>
+    <button onclick="refreshPlayers()" id="btn-refresh"
+      style="background:none;border:none;color:#888;font-size:18px;cursor:pointer;padding:0 4px">↻</button>
+  </div>
   <input id="search" type="text" placeholder="Search player..." autocomplete="off" autocorrect="off" spellcheck="false">
   <div id="player-list"></div>
 </div>
@@ -214,6 +218,19 @@
     } catch(e) {
       document.getElementById('player-list').innerHTML = '<div class="player-item" style="color:#ef4444">Failed to load — check connection</div>';
     }
+  }
+
+  async function refreshPlayers() {
+    const btn = document.getElementById('btn-refresh');
+    btn.textContent = '…';
+    try {
+      await fetch('/api/refresh', { method: 'POST' });
+      await loadPlayers();
+      btn.textContent = '✓';
+    } catch(e) {
+      btn.textContent = '✕';
+    }
+    setTimeout(() => btn.textContent = '↻', 2000);
   }
 
   function renderList(players) {

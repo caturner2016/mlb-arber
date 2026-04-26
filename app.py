@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI):
 
     async def refresh_loop():
         while True:
-            await asyncio.sleep(1800)
+            await asyncio.sleep(300)
             await cache.build(kalshi)
             log.info("Cache refreshed")
     asyncio.create_task(refresh_loop())
@@ -154,6 +154,13 @@ async def get_players():
 
     return {"players": sorted(players.values(), key=lambda x: x["name"]),
             "count": len(players)}
+
+
+@app.post("/api/refresh")
+async def refresh_cache():
+    """Force rebuild the player cache."""
+    await cache.build(kalshi)
+    return {"hr_markets": len(cache.hr_cache), "hits_markets": len(cache.hits_cache)}
 
 
 @app.get("/api/debug")
