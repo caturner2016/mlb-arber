@@ -270,6 +270,54 @@ async def place_trade(req: TradeRequest):
     )
 
 
+@app.post("/api/test-trade")
+async def test_trade(req: TradeRequest):
+    """Place exactly 1 contract to verify the full Kalshi pipeline."""
+    paper      = cfg.get("mode", "paper") != "live"
+    player_lower = req.player_name.lower().strip()
+
+    if req.trade_type == "home_run":
+        prop = cache.get_hr_ticker(player_lower)
+    elif req.trade_type == "hit":
+        prop = cache.get_hit_ticker(player_lower, 1)
+    else:
+        raise HTTPException(400, f"Unknown trade_type: {req.trade_type}")
+
+    if prop is None:
+        raise HTTPException(404, f"No Kalshi market for {req.player_name} ({req.trade_type})")
+
+    result = await kalshi.get_yes_ask(prop.ticker, max_cents=99)
+    if result is None:
+        raise HTTPException(409, "Market has no ask ≤ 99¢")
+
+    yes_cents, _ = result
+    count = 1  # exactly 1 contract regardless of config
+
+    log.info(f"[TEST] {req.player_name} {req.trade_type} | {prop.ticker} | 1x{yes_cents}¢ | paper={paper}")
+
+    await kalshi.place_order(prop.ticker, "yes", yes_cents, count, "limit")
+
+    cost     = yes_cents / 100
+    expected = (100 - yes_cents) / 100
+
+    record_trade(req.profile or "game", cost, expected)
+
+    return TradeResult(
+        success=True,
+        player=req.player_name.title(),
+        trade_type=req.trade_type,
+        profile="test",
+        ticker=prop.ticker,
+        contracts=1,
+        avg_price_cents=yes_cents,
+        cost_usd=round(cost, 2),
+        expected_pnl_usd=round(expected, 2),
+        latency_ms=0,
+        paper=paper,
+        message=f"{'[PAPER] ' if paper else ''}[TEST] 1 contract @ {yes_cents}¢ on {prop.ticker}",
+    )
+
+
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
     uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)
