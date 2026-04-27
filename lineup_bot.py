@@ -46,8 +46,9 @@ MAX_INNING       = 5    # stop buying after this inning
 LOOKAHEAD        = [3, 4]  # spots ahead to target
 POLL_SEC         = 3    # how often to poll each game feed
 MAX_SPEND_USD    = 5.0  # max $ per trade
-MAX_OPEN_USD     = 20.0 # pause buying when total open position value exceeds this
-DAILY_STOP_LOSS  = 20.0 # stop all trading if realized losses hit this amount
+MAX_OPEN_USD          = 20.0 # pause buying when total open position value exceeds this
+DAILY_STOP_LOSS       = 20.0 # stop all trading if realized losses hit this amount
+AT_BAT_END_DELAY_SEC  = 15   # wait after detecting at-bat end before force selling
 
 
 # ── Position tracker ───────────────────────────────────────────────────────────
@@ -63,9 +64,10 @@ class OpenPosition:
     contracts:       int
     buy_price:       int          # price we saw when signal fired
     actual_fill:     int  = 0    # price available after fill delay (paper) or real fill (live)
-    ab_started:      bool = False
-    sold:            bool = False
-    fill_confirmed:  bool = False # paper: waiting for delayed fill check
+    ab_started:         bool  = False
+    sold:               bool  = False
+    fill_confirmed:     bool  = False
+    ab_end_detected_at: float = 0.0  # monotonic time when at-bat end was first detected
 
 
 class LineupBot:
@@ -305,10 +307,14 @@ class LineupBot:
                 await self._sell(pos, bid, "profit target")
                 continue
 
-            # At-bat ended without hitting profit target — force sell at whatever bid is
+            # At-bat ended without hitting profit target — wait for API delay then sell
             if pos.ab_started and pos.player_id not in current_batters:
-                log.info(f"  AT BAT ENDED: {pos.player} — profit target not met, selling at {bid}¢")
-                await self._sell(pos, bid, "at-bat ended")
+                now = asyncio.get_event_loop().time()
+                if pos.ab_end_detected_at == 0.0:
+                    pos.ab_end_detected_at = now
+                    log.info(f"  AT BAT ENDED: {pos.player} — waiting {AT_BAT_END_DELAY_SEC}s before selling")
+                elif now - pos.ab_end_detected_at >= AT_BAT_END_DELAY_SEC:
+                    await self._sell(pos, bid, "at-bat ended")
 
     async def _sell(self, pos: OpenPosition, bid: int, reason: str) -> None:
         pnl = pos.contracts * (bid - pos.actual_fill) / 100
