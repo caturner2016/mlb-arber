@@ -41,14 +41,14 @@ log = logging.getLogger("lineup_bot")
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 MAX_BUY_CENTS    = 78   # buy early while price is still low, before casual money pumps it
-MIN_PROFIT_CENTS = 5    # sell when price rises ≥ 5¢ from buy price
+MIN_PROFIT_CENTS = 3    # sell when price rises ≥ 3¢ from buy price
 MAX_INNING       = 5    # stop buying after this inning
 LOOKAHEAD        = [3, 4]  # spots ahead to target
 POLL_SEC         = 3    # how often to poll each game feed
 MAX_SPEND_USD    = 5.0  # max $ per trade
 MAX_OPEN_USD          = 20.0 # pause buying when total open position value exceeds this
 DAILY_STOP_LOSS       = 20.0 # stop all trading if realized losses hit this amount
-AT_BAT_END_DELAY_SEC  = 15   # wait after detecting at-bat end before force selling
+MAX_HOLD_SEC          = 600  # force-sell any position held longer than this (10 min)
 
 
 # ── Position tracker ───────────────────────────────────────────────────────────
@@ -64,10 +64,10 @@ class OpenPosition:
     contracts:       int
     buy_price:       int          # price we saw when signal fired
     actual_fill:     int  = 0    # price available after fill delay (paper) or real fill (live)
-    ab_started:         bool  = False
-    sold:               bool  = False
-    fill_confirmed:     bool  = False
-    ab_end_detected_at: float = 0.0  # monotonic time when at-bat end was first detected
+    ab_started:      bool  = False
+    sold:            bool  = False
+    fill_confirmed:  bool  = False
+    opened_at:       float = field(default_factory=lambda: __import__('time').monotonic())
 
 
 class LineupBot:
@@ -334,28 +334,50 @@ class LineupBot:
             log.info(f"  [PAPER] FILLED {pos.player} @ {delayed_price}¢ ({slippage}¢ better)")
 
     async def _check_sells(self, current_batters: set[int]) -> None:
-        """Poll open positions — sell on profit target or force-sell after at-bat ends."""
-        for ticker, pos in list(self.positions.items()):
-            if pos.sold or not pos.fill_confirmed:
-                continue
+        """Poll open positions — sell on profit target, at-bat, or time limit."""
+        import time
+        open_pos = [(ticker, pos) for ticker, pos in self.positions.items()
+                    if not pos.sold and pos.fill_confirmed]
+        if not open_pos:
+            return
 
-            target = pos.actual_fill + MIN_PROFIT_CENTS
-            bid    = await self.kalshi.get_yes_bid(ticker)
-            if bid is None:
-                continue
+        # Fetch all bids in parallel
+        bids = await asyncio.gather(
+            *[self.kalshi.get_yes_bid(ticker) for ticker, _ in open_pos],
+            return_exceptions=True,
+        )
 
-            # Profit target hit — sell immediately
-            if bid >= target:
+        now = time.monotonic()
+        for (ticker, pos), bid in zip(open_pos, bids):
+            if isinstance(bid, Exception):
+                bid = None
+
+            target    = pos.actual_fill + MIN_PROFIT_CENTS
+            held_secs = now - pos.opened_at
+
+            if bid is not None:
+                log.info(f"  HOLD {pos.player:22s} fill={pos.actual_fill}¢ bid={bid}¢ "
+                         f"target={target}¢ held={int(held_secs)}s "
+                         f"{'← AT BAT' if pos.player_id in current_batters else ''}")
+
+            # Profit target hit
+            if bid is not None and bid >= target:
                 await self._sell(pos, bid, "profit target")
                 continue
 
-            # API shows player is now batting — in reality they stepped up ~15s ago,
-            # pump has already happened. Sell now at the peak rather than waiting
-            # for the at-bat result which arrives another 15s too late.
+            # Player is now batting — pump is live, sell now
             if pos.player_id in current_batters and not pos.ab_started:
                 pos.ab_started = True
-                log.info(f"  AT BAT DETECTED: {pos.player} — selling now (API ~15s behind real life)")
-                await self._sell(pos, bid, "at-bat started (API lag sell)")
+                sell_bid = bid if bid is not None else pos.actual_fill
+                log.info(f"  AT BAT: {pos.player} — selling at {sell_bid}¢")
+                await self._sell(pos, sell_bid, "at-bat started")
+                continue
+
+            # Force-sell if held too long — player has definitely batted by now
+            if held_secs > MAX_HOLD_SEC:
+                sell_bid = bid if bid is not None else pos.actual_fill
+                log.warning(f"  FORCE SELL {pos.player} after {int(held_secs)}s — bid={sell_bid}¢")
+                await self._sell(pos, sell_bid, f"timeout {int(held_secs)}s")
 
     async def _sell(self, pos: OpenPosition, bid: int, reason: str) -> None:
         pnl = pos.contracts * (bid - pos.actual_fill) / 100
