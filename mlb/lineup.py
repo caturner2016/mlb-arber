@@ -28,6 +28,7 @@ class BattingState:
     current_batter_id: int
     batting_order: list[int]     # 9 player IDs in order (for the team at bat)
     id_to_name:    dict[int, str] = field(default_factory=dict)
+    player_hits:   dict[int, int] = field(default_factory=dict)  # player_id → hits today
 
     def upcoming(self, lookahead: int) -> int | None:
         """Player ID of the batter `lookahead` spots ahead of current."""
@@ -87,6 +88,16 @@ async def get_batting_state(
         if pid and name:
             id_name_cache[pid] = name
 
+    # Collect hits for all batters in both teams from boxscore
+    player_hits: dict[int, int] = {}
+    for team_key in ("home", "away"):
+        team_players = boxscore.get(team_key, {}).get("players", {})
+        for pkey, pdata in team_players.items():
+            pid = pdata.get("person", {}).get("id")
+            hits = pdata.get("stats", {}).get("batting", {}).get("hits", 0)
+            if pid is not None:
+                player_hits[pid] = int(hits)
+
     return BattingState(
         game_pk=game_pk,
         inning=inning,
@@ -94,4 +105,5 @@ async def get_batting_state(
         current_batter_id=current_batter_id,
         batting_order=batting_order,
         id_to_name=id_name_cache,
+        player_hits=player_hits,
     )

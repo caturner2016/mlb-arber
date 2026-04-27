@@ -98,6 +98,8 @@ class LineupBot:
                 await asyncio.sleep(POLL_SEC)
 
     async def _process_state(self, state) -> None:
+        balance = await self.kalshi.get_balance() if not self.paper else 500.0
+
         for offset in LOOKAHEAD:
             player_id = state.upcoming(offset)
             if not player_id:
@@ -107,50 +109,57 @@ class LineupBot:
             if not player_name:
                 continue
 
-            prop = self.cache.get_hit_ticker(player_name.lower(), threshold=1)
-            if prop is None:
-                log.debug(f"  No hit market for {player_name}")
-                continue
+            current_hits = state.player_hits.get(player_id, 0)
+            hit_threshold = current_hits + 1  # next hit they need
+            if hit_threshold > 3:
+                hit_threshold = None  # already has 3+ hits, no market
 
-            if prop.ticker in self.bought:
-                continue  # already in or done for this player today
+            # Collect props to attempt: hit market + HR market
+            props_to_try = []
+            if hit_threshold:
+                hit_prop = self.cache.get_hit_ticker(player_name.lower(), threshold=hit_threshold)
+                if hit_prop and hit_prop.ticker not in self.bought:
+                    props_to_try.append(("hit", hit_prop))
 
-            # Check current price
-            result = await self.kalshi.get_yes_ask(prop.ticker, max_cents=MAX_BUY_CENTS)
-            if result is None:
-                log.debug(f"  {player_name}: price above {MAX_BUY_CENTS}¢, skipping")
-                continue
+            hr_prop = self.cache.get_hr_ticker(player_name.lower())
+            if hr_prop and hr_prop.ticker not in self.bought:
+                props_to_try.append(("hr", hr_prop))
 
-            yes_cents, qty = result
-            balance    = await self.kalshi.get_balance() if not self.paper else 500.0
-            spend      = min(MAX_SPEND_USD, balance)
-            count      = min(qty, int(spend / (yes_cents / 100)))
+            for prop_type, prop in props_to_try:
+                result = await self.kalshi.get_yes_ask(prop.ticker, max_cents=MAX_BUY_CENTS)
+                if result is None:
+                    log.debug(f"  {player_name} {prop_type}: above {MAX_BUY_CENTS}¢, skipping")
+                    continue
 
-            if count < 1:
-                log.warning(f"  {player_name}: not enough balance")
-                continue
+                yes_cents, qty = result
+                spend = min(MAX_SPEND_USD, balance)
+                count = min(qty, int(spend / (yes_cents / 100)))
 
-            log.info(f"  BUY {player_name} | {prop.ticker} | {count}x{yes_cents}¢ "
-                     f"(inning {state.inning}, {offset} ahead) — will sell when +{MIN_PROFIT_CENTS}¢")
+                if count < 1:
+                    continue
 
-            try:
-                await self.kalshi.place_order(prop.ticker, "yes", yes_cents, count, "limit")
+                label = f"{prop_type.upper()} ({hit_threshold}+)" if prop_type == "hit" else "HR"
+                log.info(f"  BUY {player_name} {label} | {prop.ticker} | {count}x{yes_cents}¢ "
+                         f"(inning {state.inning}, {offset} ahead)")
 
-                pos = OpenPosition(
-                    ticker=prop.ticker,
-                    player=player_name,
-                    player_id=player_id,
-                    contracts=count,
-                    buy_price=yes_cents,
-                )
-                self.positions[prop.ticker] = pos
-                self.bought.add(prop.ticker)
+                try:
+                    await self.kalshi.place_order(prop.ticker, "yes", yes_cents, count, "limit")
 
-                cost = count * yes_cents / 100
-                log.info(f"  → cost ${cost:.2f} | holding, sell triggers when bid ≥ {yes_cents + MIN_PROFIT_CENTS}¢")
+                    pos = OpenPosition(
+                        ticker=prop.ticker,
+                        player=player_name,
+                        player_id=player_id,
+                        contracts=count,
+                        buy_price=yes_cents,
+                    )
+                    self.positions[prop.ticker] = pos
+                    self.bought.add(prop.ticker)
 
-            except Exception as e:
-                log.error(f"  Order failed for {player_name}: {e}")
+                    cost = count * yes_cents / 100
+                    log.info(f"  → cost ${cost:.2f} | sell triggers when bid ≥ {yes_cents + MIN_PROFIT_CENTS}¢")
+
+                except Exception as e:
+                    log.error(f"  Order failed for {player_name} {prop_type}: {e}")
 
     async def _check_sells(self, current_batters: set[int]) -> None:
         """Poll open positions — sell on profit target or force-sell after at-bat ends."""
