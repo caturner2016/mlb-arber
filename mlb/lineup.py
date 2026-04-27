@@ -51,18 +51,14 @@ async def get_batting_state(
     Returns None if game is not in progress.
     """
     url = f"{MLB_LIVE}/game/{game_pk}/feed/live"
-    params = {"fields": (
-        "liveData,linescore,currentInning,isTopInning,offense,batter,"
-        "liveData,boxscore,teams,home,away,battingOrder,"
-        "gameData,players"
-    )}
     try:
-        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status != 200:
+                log.debug(f"Feed {game_pk} status {resp.status}")
                 return None
             data = await resp.json(content_type=None)
     except Exception as e:
-        log.debug(f"Feed error game {game_pk}: {e}")
+        log.warning(f"Feed error game {game_pk}: {e}")
         return None
 
     live = data.get("liveData", {})
