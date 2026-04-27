@@ -51,11 +51,13 @@ MAX_SPEND_USD  = 5.0  # max $ per trade
 
 @dataclass
 class OpenPosition:
-    ticker:    str
-    player:    str
-    contracts: int
-    buy_price: int
-    sold:      bool = False
+    ticker:     str
+    player:     str
+    player_id:  int
+    contracts:  int
+    buy_price:  int
+    ab_started: bool = False  # True once this player becomes the current batter
+    sold:       bool = False
 
 
 class LineupBot:
@@ -67,34 +69,35 @@ class LineupBot:
         self.positions: dict[str, OpenPosition] = {}   # ticker → position
         self.bought:    set[str] = set()               # tickers we've ever bought today
         self._id_name:  dict[int, str] = {}            # player_id → full name (shared cache)
+        self._game_states: dict[int, int] = {}         # game_pk → current_batter_id
 
     async def run(self) -> None:
         log.info(f"Lineup bot started — {'LIVE' if self.live else 'PAPER'} mode")
-        log.info(f"  Buy ≤ {MAX_BUY_CENTS}¢ | Sell @ {SELL_CENTS}¢ | Innings 1-{MAX_INNING}")
+        log.info(f"  Buy ≤ {MAX_BUY_CENTS}¢ | min profit {MIN_PROFIT_CENTS}¢ | Innings 1-{MAX_INNING}")
 
         async with aiohttp.ClientSession() as session:
             while True:
                 games = get_todays_games()
                 live_games = [g for g in games if g.status == "Live"]
 
-                tasks = [
-                    self._process_game(g.game_pk, session)
-                    for g in live_games
-                ]
-                if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                states = await asyncio.gather(
+                    *[get_batting_state(g.game_pk, session, self._id_name) for g in live_games],
+                    return_exceptions=True,
+                )
 
-                await self._check_sells()
+                current_batters: set[int] = set()
+                for state in states:
+                    if isinstance(state, Exception) or state is None:
+                        continue
+                    self._game_states[state.game_pk] = state.current_batter_id
+                    current_batters.add(state.current_batter_id)
+                    if state.inning <= MAX_INNING:
+                        await self._process_state(state)
+
+                await self._check_sells(current_batters)
                 await asyncio.sleep(POLL_SEC)
 
-    async def _process_game(self, game_pk: int, session: aiohttp.ClientSession) -> None:
-        state = await get_batting_state(game_pk, session, self._id_name)
-        if state is None:
-            return
-
-        if state.inning > MAX_INNING:
-            return
-
+    async def _process_state(self, state) -> None:
         for offset in LOOKAHEAD:
             player_id = state.upcoming(offset)
             if not player_id:
@@ -136,6 +139,7 @@ class LineupBot:
                 pos = OpenPosition(
                     ticker=prop.ticker,
                     player=player_name,
+                    player_id=player_id,
                     contracts=count,
                     buy_price=yes_cents,
                 )
@@ -148,26 +152,41 @@ class LineupBot:
             except Exception as e:
                 log.error(f"  Order failed for {player_name}: {e}")
 
-    async def _check_sells(self) -> None:
-        """Poll open positions and sell when price has risen by MIN_PROFIT_CENTS."""
+    async def _check_sells(self, current_batters: set[int]) -> None:
+        """Poll open positions — sell on profit target or force-sell after at-bat ends."""
         for ticker, pos in list(self.positions.items()):
             if pos.sold:
                 continue
+
+            # Track when the at-bat starts
+            if pos.player_id in current_batters and not pos.ab_started:
+                pos.ab_started = True
+                log.info(f"  AT BAT: {pos.player} now batting — watching for sell")
+
             target = pos.buy_price + MIN_PROFIT_CENTS
-            bid = await self.kalshi.get_yes_bid(ticker)
+            bid    = await self.kalshi.get_yes_bid(ticker)
             if bid is None:
                 continue
-            log.debug(f"  {pos.player} bid={bid}¢ (trigger @ {target}¢)")
+
+            # Profit target hit — sell at current bid
             if bid >= target:
-                # Sell at the current bid — capture the full move, not just 10¢
-                profit = pos.contracts * (bid - pos.buy_price) / 100
-                log.info(f"  SELL {pos.player} @ {bid}¢ (bought {pos.buy_price}¢) "
-                         f"| +{bid - pos.buy_price}¢/contract | profit +${profit:.2f}")
-                try:
-                    await self.kalshi.sell_position(ticker, pos.contracts, bid)
-                    pos.sold = True
-                except Exception as e:
-                    log.error(f"  Sell failed for {pos.player}: {e}")
+                await self._sell(pos, bid, "profit target")
+                continue
+
+            # At-bat ended without hitting profit target — force sell at whatever bid is
+            if pos.ab_started and pos.player_id not in current_batters:
+                log.info(f"  AT BAT ENDED: {pos.player} — profit target not met, selling at {bid}¢")
+                await self._sell(pos, bid, "at-bat ended")
+
+    async def _sell(self, pos: OpenPosition, bid: int, reason: str) -> None:
+        pnl = pos.contracts * (bid - pos.buy_price) / 100
+        log.info(f"  SELL {pos.player} @ {bid}¢ (bought {pos.buy_price}¢) "
+                 f"| {reason} | {'+' if pnl >= 0 else ''}{pnl:.2f}")
+        try:
+            await self.kalshi.sell_position(pos.ticker, pos.contracts, bid)
+            pos.sold = True
+        except Exception as e:
+            log.error(f"  Sell failed for {pos.player}: {e}")
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
