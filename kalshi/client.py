@@ -246,6 +246,49 @@ class KalshiClient:
             resp.raise_for_status()
             return await resp.json(content_type=None)
 
+    async def sell_position(
+        self,
+        ticker: str,
+        count: int,
+        min_price_cents: int,
+    ) -> dict[str, Any]:
+        """Place a limit SELL order on YES contracts already owned."""
+        if self.paper_mode:
+            return {"paper": True, "action": "sell", "ticker": ticker,
+                    "price_cents": min_price_cents, "count": count}
+
+        if not self._can_sign():
+            raise RuntimeError("Live mode requires credentials")
+
+        session = await self._session_()
+        path = "/portfolio/orders"
+        headers = self._auth_headers("POST", path)
+        body = {
+            "ticker":    ticker,
+            "action":    "sell",
+            "side":      "yes",
+            "type":      "limit",
+            "count":     count,
+            "yes_price": min_price_cents,
+        }
+        async with session.post(
+            KALSHI_BASE + path, headers=headers, json=body, timeout=aiohttp.ClientTimeout(total=3)
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json(content_type=None)
+
+    async def get_yes_bid(self, ticker: str) -> int | None:
+        """Current best YES bid in cents — used to time sell exits."""
+        try:
+            market = await self.get_market(ticker)
+            bid = market.get("yes_bid")
+            if bid is None:
+                return None
+            v = float(bid)
+            return int(round(v * 100)) if v <= 1.0 else int(v)
+        except Exception:
+            return None
+
     async def cancel_resting_orders(self) -> None:
         """Cancel all open resting orders (used before hits market buys)."""
         session = await self._session_()
