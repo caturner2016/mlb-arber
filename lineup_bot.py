@@ -242,19 +242,28 @@ class LineupBot:
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 async def main() -> None:
-    live_mode = "--live" in sys.argv
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--live",     action="store_true", help="Live mode (real orders)")
+    parser.add_argument("--max-bet",  type=float, default=None, help="Max $ per trade (overrides default)")
+    args = parser.parse_args()
+
+    if args.max_bet is not None:
+        global MAX_SPEND_USD
+        MAX_SPEND_USD = args.max_bet
 
     cfg = yaml.safe_load(open("config.yaml"))
     kalshi = KalshiClient(
         key_id=cfg.get("kalshi_key_id", ""),
         private_key_path=cfg.get("kalshi_private_key_path", ""),
-        paper_mode=not live_mode,
+        paper_mode=not args.live,
     )
     cache = PropCache()
     await cache.build(kalshi)
     log.info(f"Cache: {len(cache.hr_cache)} HR, {len(cache.hits_cache)} hits markets")
+    log.info(f"Max bet: ${MAX_SPEND_USD} | {'LIVE' if args.live else 'PAPER'}")
 
-    bot = LineupBot(kalshi, cache, live=live_mode)
+    bot = LineupBot(kalshi, cache, live=args.live)
     try:
         await bot.run()
     finally:
