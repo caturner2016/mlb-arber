@@ -146,6 +146,18 @@ class LineupBot:
                 )
                 buy_pks = {g.game_pk for g in buy_games}
 
+                # Log state results every 10 polls
+                if _poll_count % 10 == 1:
+                    for i, (g, s) in enumerate(zip(track_games, all_states)):
+                        if isinstance(s, Exception):
+                            log.info(f"  game {g.game_pk} ({g.away_team}@{g.home_team}): ERROR {s}")
+                        elif s is None:
+                            log.info(f"  game {g.game_pk} ({g.away_team}@{g.home_team}): state=None (not in progress?)")
+                        else:
+                            batter = s.name(s.current_batter_id) if s.current_batter_id else "unknown"
+                            log.info(f"  game {g.game_pk} ({g.away_team}@{g.home_team}): "
+                                     f"inning={s.inning} batter={batter!r} order_len={len(s.batting_order)}")
+
                 current_batters: set[int] = set()
                 for state in all_states:
                     if isinstance(state, Exception) or state is None:
