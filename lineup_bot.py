@@ -90,15 +90,15 @@ class LineupBot:
         writer = csv.writer(fh)
         if not exists:
             writer.writerow(["timestamp", "player", "prop_type", "batters_away",
-                             "inning", "price_cents", "game"])
+                             "inning", "price_cents", "current_batter", "game"])
             fh.flush()
         return (fh, writer)
 
     def _log_price(self, player: str, prop_type: str, batters_away: int,
-                   inning: int, price: int, game: str) -> None:
+                   inning: int, price: int, current_batter: str, game: str) -> None:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self._price_log[1].writerow([ts, player, prop_type, batters_away,
-                                     inning, price, game])
+                                     inning, price, current_batter, game])
         self._price_log[0].flush()
 
     def open_exposure(self) -> float:
@@ -150,8 +150,9 @@ class LineupBot:
                 await asyncio.sleep(POLL_SEC)
 
     async def _process_state(self, state, buy: bool = True) -> None:
-        balance    = await self.kalshi.get_balance() if not self.paper else 500.0
-        game_label = f"game_{state.game_pk}"
+        balance         = await self.kalshi.get_balance() if not self.paper else 500.0
+        game_label      = f"game_{state.game_pk}"
+        current_batter  = state.name(state.current_batter_id) if state.current_batter_id else ""
 
         # ── Price tracking: observe all batters 1-8 away (all games) ──────────
         for offset in range(1, 9):
@@ -168,11 +169,11 @@ class LineupBot:
             if hit_prop:
                 bid = await self.kalshi.get_yes_bid(hit_prop.ticker)
                 if bid:
-                    self._log_price(pname, f"hit{thr}+", offset, state.inning, bid, game_label)
+                    self._log_price(pname, f"hit{thr}+", offset, state.inning, bid, current_batter, game_label)
             if hr_prop:
                 bid = await self.kalshi.get_yes_bid(hr_prop.ticker)
                 if bid:
-                    self._log_price(pname, "hr", offset, state.inning, bid, game_label)
+                    self._log_price(pname, "hr", offset, state.inning, bid, current_batter, game_label)
 
         # ── Buy logic: only for filtered game, only at LOOKAHEAD offsets ────────
         if not buy:
