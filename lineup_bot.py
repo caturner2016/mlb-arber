@@ -229,7 +229,11 @@ class LineupBot:
             for prop_type, prop in props_to_try:
                 result = await self.kalshi.get_yes_ask(prop.ticker, max_cents=MAX_BUY_CENTS)
                 if result is None:
-                    log.debug(f"  {player_name} {prop_type}: above {MAX_BUY_CENTS}¢, skipping")
+                    # Fetch real price so user can see why it was skipped
+                    real = await self.kalshi.get_yes_ask(prop.ticker, max_cents=99)
+                    real_str = f"{real[0]}¢" if real else "no ask"
+                    log.info(f"  SKIP {player_name} {prop_type} ({offset} ahead, inning {state.inning}): "
+                             f"ask={real_str} > limit {MAX_BUY_CENTS}¢")
                     continue
 
                 yes_cents, qty = result
