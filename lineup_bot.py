@@ -39,12 +39,13 @@ log = logging.getLogger("lineup_bot")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-MAX_BUY_CENTS  = 78   # buy early while price is still low, before casual money pumps it
-MIN_PROFIT_CENTS = 5   # sell when price rises ≥ 5¢ from buy price
-MAX_INNING     = 5    # stop buying after this inning
-LOOKAHEAD      = [3, 4]  # spots ahead to target
-POLL_SEC       = 3    # how often to poll each game feed
-MAX_SPEND_USD  = 5.0  # max $ per trade
+MAX_BUY_CENTS    = 78   # buy early while price is still low, before casual money pumps it
+MIN_PROFIT_CENTS = 5    # sell when price rises ≥ 5¢ from buy price
+MAX_INNING       = 5    # stop buying after this inning
+LOOKAHEAD        = [3, 4]  # spots ahead to target
+POLL_SEC         = 3    # how often to poll each game feed
+MAX_SPEND_USD    = 5.0  # max $ per trade
+MAX_OPEN_USD     = 20.0 # pause buying when total open position value exceeds this
 
 
 # ── Position tracker ───────────────────────────────────────────────────────────
@@ -70,20 +71,39 @@ class LineupBot:
         self.kalshi    = kalshi
         self.cache     = cache
         self.live      = live
-        self.paper     = not live
+        self.paper       = not live
+        self.game_filter: str | None = None            # only watch games matching this team name
         self.positions: dict[str, OpenPosition] = {}   # ticker → position
         self.bought:    set[str] = set()               # tickers we've ever bought today
         self._id_name:  dict[int, str] = {}            # player_id → full name (shared cache)
         self._game_states: dict[int, int] = {}         # game_pk → current_batter_id
 
+    def open_exposure(self) -> float:
+        """Total USD currently at risk in unsold positions."""
+        return sum(
+            p.contracts * (p.actual_fill or p.buy_price) / 100
+            for p in self.positions.values()
+            if not p.sold and p.fill_confirmed
+        )
+
     async def run(self) -> None:
         log.info(f"Lineup bot started — {'LIVE' if self.live else 'PAPER'} mode")
         log.info(f"  Buy ≤ {MAX_BUY_CENTS}¢ | min profit {MIN_PROFIT_CENTS}¢ | Innings 1-{MAX_INNING}")
+        if self.game_filter:
+            log.info(f"  Game filter: {self.game_filter}")
 
         async with aiohttp.ClientSession() as session:
             while True:
                 games = get_todays_games()
                 live_games = [g for g in games if g.status == "Live"]
+
+                # Apply game filter
+                if self.game_filter:
+                    f = self.game_filter.lower()
+                    live_games = [
+                        g for g in live_games
+                        if f in g.home_team.lower() or f in g.away_team.lower()
+                    ]
 
                 states = await asyncio.gather(
                     *[get_batting_state(g.game_pk, session, self._id_name) for g in live_games],
@@ -103,6 +123,12 @@ class LineupBot:
                 await asyncio.sleep(POLL_SEC)
 
     async def _process_state(self, state) -> None:
+        # Check open exposure cap before buying anything
+        exposure = self.open_exposure()
+        if exposure >= MAX_OPEN_USD:
+            log.debug(f"  Open exposure ${exposure:.2f} ≥ ${MAX_OPEN_USD} — pausing buys")
+            return
+
         balance = await self.kalshi.get_balance() if not self.paper else 500.0
 
         for offset in LOOKAHEAD:
@@ -245,12 +271,17 @@ async def main() -> None:
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--live",     action="store_true", help="Live mode (real orders)")
-    parser.add_argument("--max-bet",  type=float, default=None, help="Max $ per trade (overrides default)")
+    parser.add_argument("--max-bet",  type=float, default=None, help="Max $ per trade")
+    parser.add_argument("--max-open", type=float, default=None, help="Max total $ open at once")
+    parser.add_argument("--game",     type=str,   default=None, help="Only watch games with this team name e.g. 'rays'")
     args = parser.parse_args()
 
     if args.max_bet is not None:
         global MAX_SPEND_USD
         MAX_SPEND_USD = args.max_bet
+    if args.max_open is not None:
+        global MAX_OPEN_USD
+        MAX_OPEN_USD = args.max_open
 
     cfg = yaml.safe_load(open("config.yaml"))
     kalshi = KalshiClient(
@@ -264,6 +295,7 @@ async def main() -> None:
     log.info(f"Max bet: ${MAX_SPEND_USD} | {'LIVE' if args.live else 'PAPER'}")
 
     bot = LineupBot(kalshi, cache, live=args.live)
+    bot.game_filter = args.game
     try:
         await bot.run()
     finally:
