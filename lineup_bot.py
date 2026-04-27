@@ -117,10 +117,17 @@ class LineupBot:
         if self.game_filter:
             log.info(f"  Game filter: {self.game_filter}")
 
+        _poll_count = 0
         async with aiohttp.ClientSession() as session:
             while True:
+                _poll_count += 1
                 games     = get_todays_games()
                 all_live  = [g for g in games if g.status == "Live"]
+
+                # Log status every 10 polls (~30s) so user can see the bot is running
+                if _poll_count % 10 == 1:
+                    game_names = [f"{g.away_team} @ {g.home_team}" for g in all_live]
+                    log.info(f"[poll #{_poll_count}] {len(all_live)} live game(s): {game_names or 'none'}")
 
                 # All games → price tracking
                 # Filtered games → buying
@@ -128,6 +135,8 @@ class LineupBot:
                     f = self.game_filter.lower()
                     buy_games   = [g for g in all_live if f in g.home_team.lower() or f in g.away_team.lower()]
                     track_games = all_live
+                    if _poll_count % 10 == 1 and all_live:
+                        log.info(f"  → filter '{self.game_filter}' matched {len(buy_games)} buy game(s)")
                 else:
                     buy_games = track_games = all_live
 
@@ -147,6 +156,8 @@ class LineupBot:
                         # Price tracking: all games
                         # Buying: only filtered games
                         await self._process_state(state, buy=state.game_pk in buy_pks)
+                    elif _poll_count % 10 == 1:
+                        log.info(f"  Inning {state.inning} > max {MAX_INNING} — not buying")
 
                 await self._check_sells(current_batters)
                 await asyncio.sleep(POLL_SEC)
