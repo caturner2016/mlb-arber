@@ -46,6 +46,7 @@ LOOKAHEAD        = [3, 4]  # spots ahead to target
 POLL_SEC         = 3    # how often to poll each game feed
 MAX_SPEND_USD    = 5.0  # max $ per trade
 MAX_OPEN_USD     = 20.0 # pause buying when total open position value exceeds this
+DAILY_STOP_LOSS  = 20.0 # stop all trading if realized losses hit this amount
 
 
 # ── Position tracker ───────────────────────────────────────────────────────────
@@ -77,6 +78,7 @@ class LineupBot:
         self.bought:    set[str] = set()               # tickers we've ever bought today
         self._id_name:  dict[int, str] = {}            # player_id → full name (shared cache)
         self._game_states: dict[int, int] = {}         # game_pk → current_batter_id
+        self.realized_pnl: float = 0.0                 # cumulative P&L for today
 
     def open_exposure(self) -> float:
         """Total USD currently at risk in unsold positions."""
@@ -123,6 +125,11 @@ class LineupBot:
                 await asyncio.sleep(POLL_SEC)
 
     async def _process_state(self, state) -> None:
+        # Stop loss check
+        if self.realized_pnl <= -DAILY_STOP_LOSS:
+            log.warning(f"  STOP LOSS HIT — realized P&L ${self.realized_pnl:.2f} — no more buys today")
+            return
+
         # Check open exposure cap before buying anything
         exposure = self.open_exposure()
         if exposure >= MAX_OPEN_USD:
@@ -255,9 +262,11 @@ class LineupBot:
 
     async def _sell(self, pos: OpenPosition, bid: int, reason: str) -> None:
         pnl = pos.contracts * (bid - pos.actual_fill) / 100
+        self.realized_pnl += pnl
         fill_note = f"signal={pos.buy_price}¢ fill={pos.actual_fill}¢" if self.paper else f"fill={pos.actual_fill}¢"
         log.info(f"  {'[PAPER] ' if self.paper else ''}SELL {pos.player} @ {bid}¢ "
-                 f"({fill_note}) | {reason} | {'+' if pnl >= 0 else ''}${pnl:.2f}")
+                 f"({fill_note}) | {reason} | {'+' if pnl >= 0 else ''}${pnl:.2f} "
+                 f"| day P&L: {'+' if self.realized_pnl >= 0 else ''}${self.realized_pnl:.2f}")
         try:
             await self.kalshi.sell_position(pos.ticker, pos.contracts, bid)
             pos.sold = True
