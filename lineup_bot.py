@@ -39,7 +39,7 @@ log = logging.getLogger("lineup_bot")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-MAX_BUY_CENTS  = 94   # don't buy if less than 5¢ room to 99¢
+MAX_BUY_CENTS  = 78   # buy early while price is still low, before casual money pumps it
 MIN_PROFIT_CENTS = 5   # sell when price rises ≥ 5¢ from buy price
 MAX_INNING     = 5    # stop buying after this inning
 LOOKAHEAD      = [3, 4]  # spots ahead to target
