@@ -119,7 +119,6 @@ class LineupBot:
                 continue
 
             yes_cents, qty = result
-            sell_cents = yes_cents + MIN_PROFIT_CENTS
             balance    = await self.kalshi.get_balance() if not self.paper else 500.0
             spend      = min(MAX_SPEND_USD, balance)
             count      = min(qty, int(spend / (yes_cents / 100)))
@@ -129,12 +128,10 @@ class LineupBot:
                 continue
 
             log.info(f"  BUY {player_name} | {prop.ticker} | {count}x{yes_cents}¢ "
-                     f"→ sell @ {sell_cents}¢  (inning {state.inning}, {offset} ahead)")
+                     f"(inning {state.inning}, {offset} ahead) — will sell when +{MIN_PROFIT_CENTS}¢")
 
             try:
                 await self.kalshi.place_order(prop.ticker, "yes", yes_cents, count, "limit")
-                # Immediately place sell at buy_price + 10¢
-                await self.kalshi.sell_position(prop.ticker, count, sell_cents)
 
                 pos = OpenPosition(
                     ticker=prop.ticker,
@@ -145,26 +142,32 @@ class LineupBot:
                 self.positions[prop.ticker] = pos
                 self.bought.add(prop.ticker)
 
-                cost     = count * yes_cents / 100
-                expected = count * MIN_PROFIT_CENTS / 100
-                log.info(f"  → cost ${cost:.2f} | expected +${expected:.2f} if fills @ {sell_cents}¢")
+                cost = count * yes_cents / 100
+                log.info(f"  → cost ${cost:.2f} | holding, sell triggers when bid ≥ {yes_cents + MIN_PROFIT_CENTS}¢")
 
             except Exception as e:
                 log.error(f"  Order failed for {player_name}: {e}")
 
     async def _check_sells(self) -> None:
-        """Log status of open positions."""
+        """Poll open positions and sell when price has risen by MIN_PROFIT_CENTS."""
         for ticker, pos in list(self.positions.items()):
             if pos.sold:
                 continue
             target = pos.buy_price + MIN_PROFIT_CENTS
             bid = await self.kalshi.get_yes_bid(ticker)
-            if bid is not None:
-                log.debug(f"  {pos.player} bid={bid}¢ (sell order @ {target}¢ resting)")
-                if bid >= target:
-                    log.info(f"  SELL FILLED (expected): {pos.player} @ ~{bid}¢ "
-                             f"| profit ~+${pos.contracts * (bid - pos.buy_price) / 100:.2f}")
+            if bid is None:
+                continue
+            log.debug(f"  {pos.player} bid={bid}¢ (trigger @ {target}¢)")
+            if bid >= target:
+                # Sell at the current bid — capture the full move, not just 10¢
+                profit = pos.contracts * (bid - pos.buy_price) / 100
+                log.info(f"  SELL {pos.player} @ {bid}¢ (bought {pos.buy_price}¢) "
+                         f"| +{bid - pos.buy_price}¢/contract | profit +${profit:.2f}")
+                try:
+                    await self.kalshi.sell_position(ticker, pos.contracts, bid)
                     pos.sold = True
+                except Exception as e:
+                    log.error(f"  Sell failed for {pos.player}: {e}")
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
