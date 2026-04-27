@@ -107,29 +107,63 @@ class KalshiClient:
 
     async def get_yes_ask(self, ticker: str, max_cents: int = 96) -> tuple[int, int] | None:
         """
-        Returns (yes_ask_cents, quantity) if ask <= max_cents, else None.
-        Hot path — called immediately after an event fires.
+        Sweeps the full orderbook up to max_cents.
+        Returns (best_ask_cents, total_qty_available) across all levels <= max_cents.
         """
-        fetched_at = time.monotonic()
+        try:
+            session = await self._session_()
+            path = f"/markets/{ticker}/orderbook"
+            headers = self._auth_headers("GET", path)
+            async with session.get(
+                KALSHI_BASE + path, headers=headers, timeout=aiohttp.ClientTimeout(total=3)
+            ) as resp:
+                if resp.status != 200:
+                    # Fall back to market snapshot
+                    return await self._get_yes_ask_snapshot(ticker, max_cents)
+                data = await resp.json(content_type=None)
+
+            ob = data.get("orderbook", data)
+            # YES asks are in the "yes" key as [[price_cents, qty], ...]
+            # or sometimes "asks" / "yes_asks"
+            levels = ob.get("yes") or ob.get("asks") or ob.get("yes_asks") or []
+
+            if not levels:
+                return await self._get_yes_ask_snapshot(ticker, max_cents)
+
+            best_ask  = None
+            total_qty = 0
+            for level in levels:
+                price = level[0] if isinstance(level, (list, tuple)) else level.get("price", 0)
+                qty   = level[1] if isinstance(level, (list, tuple)) else level.get("quantity", 0)
+                p = int(round(float(price) * 100)) if float(price) <= 1.0 else int(price)
+                if 1 <= p <= max_cents:
+                    if best_ask is None:
+                        best_ask = p
+                    total_qty += int(qty)
+
+            if best_ask is None or total_qty == 0:
+                return None
+            return (best_ask, total_qty)
+
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return await self._get_yes_ask_snapshot(ticker, max_cents)
+
+    async def _get_yes_ask_snapshot(self, ticker: str, max_cents: int) -> tuple[int, int] | None:
+        """Fallback: single best ask from market snapshot."""
         try:
             market = await self.get_market(ticker)
             if market.get("status") != "active":
                 return None
-
-            yes_ask = market.get("yes_ask_dollars") or market.get("yes_ask")
+            yes_ask  = market.get("yes_ask_dollars") or market.get("yes_ask")
             yes_size = int(float(market.get("yes_ask_size_fp") or 100))
-
             if yes_ask is None:
                 return None
-
             v = float(yes_ask)
             yes_cents = int(round(v * 100)) if v <= 1.0 else int(v)
-
             if yes_cents < 1 or yes_cents > max_cents:
                 return None
-
             return (yes_cents, yes_size)
-        except (aiohttp.ClientError, asyncio.TimeoutError):
+        except Exception:
             return None
 
     async def get_markets(self, series_ticker: str, cursor: str | None = None) -> dict[str, Any]:

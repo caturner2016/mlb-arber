@@ -247,19 +247,21 @@ async def place_trade(req: TradeRequest):
 
     yes_cents, qty = result
     balance = await kalshi.get_balance() if not paper else 1000.0
-    count   = min(qty, int(balance / (yes_cents / 100)))
+    # Use max_buy as the limit price — sweeps all levels up to that price.
+    # Calculate max contracts based on worst-case cost (max_buy per contract).
+    count = min(qty, int(balance / (max_buy / 100)))
 
     if count < 1:
         raise HTTPException(409, "Insufficient balance or no contracts available")
 
-    cost     = count * yes_cents / 100
+    cost     = count * max_buy / 100  # worst case; actual fill may be cheaper
     settle   = 100 if profile == "home" else sell_at
     expected = count * (settle - yes_cents) / 100
 
     log.info(f"[{profile.upper()}] {req.player_name} {req.trade_type} | {prop.ticker} | "
-             f"{count}x{yes_cents}¢ | paper={paper}")
+             f"{count}x limit@{max_buy}¢ (best={yes_cents}¢) | paper={paper}")
 
-    await kalshi.place_order(prop.ticker, "yes", yes_cents, count, "limit")
+    await kalshi.place_order(prop.ticker, "yes", max_buy, count, "limit")
 
     # Game profile: flip at sell_cents. Home profile: hold to $1.00 settlement.
     if profile == "game" and req.trade_type == "home_run":
