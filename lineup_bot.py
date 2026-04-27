@@ -40,7 +40,7 @@ log = logging.getLogger("lineup_bot")
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 MAX_BUY_CENTS  = 78   # only buy if hit prop YES ask is ≤ this
-MIN_PROFIT_CENTS = 10  # sell when price rises ≥ 10¢ from buy price
+MIN_PROFIT_CENTS = 5   # sell when price rises ≥ 5¢ from buy price
 MAX_INNING     = 5    # stop buying after this inning
 LOOKAHEAD      = [3, 4]  # spots ahead to target
 POLL_SEC       = 3    # how often to poll each game feed
