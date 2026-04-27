@@ -24,7 +24,8 @@ import asyncio
 import logging
 import sys
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 
 import aiohttp
 import yaml
@@ -79,6 +80,26 @@ class LineupBot:
         self._id_name:  dict[int, str] = {}            # player_id → full name (shared cache)
         self._game_states: dict[int, int] = {}         # game_pk → current_batter_id
         self.realized_pnl: float = 0.0                 # cumulative P&L for today
+        self._price_log   = self._open_price_log()
+
+    def _open_price_log(self):
+        path   = Path("price_tracking.csv")
+        exists = path.exists()
+        fh     = open(path, "a", newline="")
+        import csv
+        writer = csv.writer(fh)
+        if not exists:
+            writer.writerow(["timestamp", "player", "prop_type", "batters_away",
+                             "inning", "price_cents", "game"])
+            fh.flush()
+        return (fh, writer)
+
+    def _log_price(self, player: str, prop_type: str, batters_away: int,
+                   inning: int, price: int, game: str) -> None:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._price_log[1].writerow([ts, player, prop_type, batters_away,
+                                     inning, price, game])
+        self._price_log[0].flush()
 
     def open_exposure(self) -> float:
         """Total USD currently at risk in unsold positions."""
@@ -137,7 +158,30 @@ class LineupBot:
             return
 
         balance = await self.kalshi.get_balance() if not self.paper else 500.0
+        game_label = f"game_{state.game_pk}"
 
+        # ── Price tracking: observe all batters 1-8 away ──────────────────────
+        for offset in range(1, 9):
+            pid = state.upcoming(offset)
+            if not pid:
+                continue
+            pname = state.name(pid)
+            if not pname:
+                continue
+            hits = state.player_hits.get(pid, 0)
+            thr  = min(hits + 1, 3)
+            hit_prop = self.cache.get_hit_ticker(pname.lower(), threshold=thr)
+            hr_prop  = self.cache.get_hr_ticker(pname.lower())
+            if hit_prop:
+                bid = await self.kalshi.get_yes_bid(hit_prop.ticker)
+                if bid:
+                    self._log_price(pname, f"hit{thr}+", offset, state.inning, bid, game_label)
+            if hr_prop:
+                bid = await self.kalshi.get_yes_bid(hr_prop.ticker)
+                if bid:
+                    self._log_price(pname, "hr", offset, state.inning, bid, game_label)
+
+        # ── Buy logic: only at LOOKAHEAD offsets ─────────────────────────────
         for offset in LOOKAHEAD:
             player_id = state.upcoming(offset)
             if not player_id:
