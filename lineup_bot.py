@@ -49,15 +49,20 @@ MAX_SPEND_USD  = 5.0  # max $ per trade
 
 # ── Position tracker ───────────────────────────────────────────────────────────
 
+FILL_DELAY_SEC = 3   # simulate real order latency in paper mode
+
+
 @dataclass
 class OpenPosition:
-    ticker:     str
-    player:     str
-    player_id:  int
-    contracts:  int
-    buy_price:  int
-    ab_started: bool = False  # True once this player becomes the current batter
-    sold:       bool = False
+    ticker:          str
+    player:          str
+    player_id:       int
+    contracts:       int
+    buy_price:       int          # price we saw when signal fired
+    actual_fill:     int  = 0    # price available after fill delay (paper) or real fill (live)
+    ab_started:      bool = False
+    sold:            bool = False
+    fill_confirmed:  bool = False # paper: waiting for delayed fill check
 
 
 class LineupBot:
@@ -143,15 +148,25 @@ class LineupBot:
                          f"(inning {state.inning}, {offset} ahead)")
 
                 try:
-                    await self.kalshi.place_order(prop.ticker, "yes", yes_cents, count, "limit")
-
                     pos = OpenPosition(
                         ticker=prop.ticker,
                         player=player_name,
                         player_id=player_id,
                         contracts=count,
                         buy_price=yes_cents,
+                        fill_confirmed=not self.paper,  # live = confirmed immediately
                     )
+
+                    if self.paper:
+                        # Don't place order — wait FILL_DELAY_SEC then check real price
+                        log.info(f"  [PAPER] SIGNAL {player_name} {label} @ {yes_cents}¢ "
+                                 f"— checking fill in {FILL_DELAY_SEC}s")
+                        asyncio.create_task(self._confirm_paper_fill(pos))
+                    else:
+                        await self.kalshi.place_order(prop.ticker, "yes", yes_cents, count, "limit")
+                        pos.actual_fill = yes_cents
+                        log.info(f"  [LIVE] BUY {player_name} {label} {count}x{yes_cents}¢")
+
                     self.positions[prop.ticker] = pos
                     self.bought.add(prop.ticker)
 
@@ -161,10 +176,35 @@ class LineupBot:
                 except Exception as e:
                     log.error(f"  Order failed for {player_name} {prop_type}: {e}")
 
+    async def _confirm_paper_fill(self, pos: OpenPosition) -> None:
+        """
+        Paper mode: wait FILL_DELAY_SEC, then check the actual ask.
+        This simulates real order latency — the price may have already moved.
+        """
+        await asyncio.sleep(FILL_DELAY_SEC)
+        result = await self.kalshi.get_yes_ask(pos.ticker, max_cents=100)
+        if result is None:
+            log.info(f"  [PAPER] MISSED {pos.player} — no ask available after {FILL_DELAY_SEC}s delay")
+            pos.sold = True  # treat as missed, skip tracking
+            return
+
+        delayed_price, _ = result
+        slippage = delayed_price - pos.buy_price
+        pos.actual_fill   = delayed_price
+        pos.fill_confirmed = True
+
+        if slippage > 0:
+            log.info(f"  [PAPER] SLIPPAGE {pos.player}: signal={pos.buy_price}¢ "
+                     f"actual={delayed_price}¢ (+{slippage}¢ slippage) — price already moved")
+        elif slippage == 0:
+            log.info(f"  [PAPER] FILLED {pos.player} @ {delayed_price}¢ — no slippage")
+        else:
+            log.info(f"  [PAPER] FILLED {pos.player} @ {delayed_price}¢ ({slippage}¢ better)")
+
     async def _check_sells(self, current_batters: set[int]) -> None:
         """Poll open positions — sell on profit target or force-sell after at-bat ends."""
         for ticker, pos in list(self.positions.items()):
-            if pos.sold:
+            if pos.sold or not pos.fill_confirmed:
                 continue
 
             # Track when the at-bat starts
@@ -172,7 +212,7 @@ class LineupBot:
                 pos.ab_started = True
                 log.info(f"  AT BAT: {pos.player} now batting — watching for sell")
 
-            target = pos.buy_price + MIN_PROFIT_CENTS
+            target = pos.actual_fill + MIN_PROFIT_CENTS
             bid    = await self.kalshi.get_yes_bid(ticker)
             if bid is None:
                 continue
@@ -188,9 +228,10 @@ class LineupBot:
                 await self._sell(pos, bid, "at-bat ended")
 
     async def _sell(self, pos: OpenPosition, bid: int, reason: str) -> None:
-        pnl = pos.contracts * (bid - pos.buy_price) / 100
-        log.info(f"  SELL {pos.player} @ {bid}¢ (bought {pos.buy_price}¢) "
-                 f"| {reason} | {'+' if pnl >= 0 else ''}{pnl:.2f}")
+        pnl = pos.contracts * (bid - pos.actual_fill) / 100
+        fill_note = f"signal={pos.buy_price}¢ fill={pos.actual_fill}¢" if self.paper else f"fill={pos.actual_fill}¢"
+        log.info(f"  {'[PAPER] ' if self.paper else ''}SELL {pos.player} @ {bid}¢ "
+                 f"({fill_note}) | {reason} | {'+' if pnl >= 0 else ''}${pnl:.2f}")
         try:
             await self.kalshi.sell_position(pos.ticker, pos.contracts, bid)
             pos.sold = True
