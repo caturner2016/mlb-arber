@@ -159,17 +159,18 @@ class LineupBot:
                                      f"inning={s.inning} batter={batter!r} order_len={len(s.batting_order)}")
 
                 current_batters: set[int] = set()
+                process_tasks = []
                 for state in all_states:
                     if isinstance(state, Exception) or state is None:
                         continue
                     self._game_states[state.game_pk] = state.current_batter_id
                     current_batters.add(state.current_batter_id)
                     if state.inning <= MAX_INNING:
-                        # Price tracking: all games
-                        # Buying: only filtered games
-                        await self._process_state(state, buy=state.game_pk in buy_pks)
+                        process_tasks.append(self._process_state(state, buy=state.game_pk in buy_pks))
                     elif _poll_count % 10 == 1:
                         log.info(f"  Inning {state.inning} > max {MAX_INNING} — not buying")
+                if process_tasks:
+                    await asyncio.gather(*process_tasks, return_exceptions=True)
 
                 await self._check_sells(current_batters)
                 await asyncio.sleep(POLL_SEC)
@@ -179,7 +180,8 @@ class LineupBot:
         game_label      = f"game_{state.game_pk}"
         current_batter  = state.name(state.current_batter_id) if state.current_batter_id else ""
 
-        # ── Price tracking: observe all batters 1-8 away (all games) ──────────
+        # ── Price tracking: fetch all bids in parallel (offsets 1-8) ──────────
+        track_items = []  # (pname, prop_type_label, offset, ticker)
         for offset in range(1, 9):
             pid = state.upcoming(offset)
             if not pid:
@@ -192,13 +194,19 @@ class LineupBot:
             hit_prop = self.cache.get_hit_ticker(pname.lower(), threshold=thr)
             hr_prop  = self.cache.get_hr_ticker(pname.lower())
             if hit_prop:
-                bid = await self.kalshi.get_yes_bid(hit_prop.ticker)
-                if bid:
-                    self._log_price(pname, f"hit{thr}+", offset, state.inning, bid, current_batter, game_label)
+                track_items.append((pname, f"hit{thr}+", offset, hit_prop.ticker))
             if hr_prop:
-                bid = await self.kalshi.get_yes_bid(hr_prop.ticker)
-                if bid:
-                    self._log_price(pname, "hr", offset, state.inning, bid, current_batter, game_label)
+                track_items.append((pname, "hr", offset, hr_prop.ticker))
+
+        if track_items:
+            bids = await asyncio.gather(
+                *[self.kalshi.get_yes_bid(ticker) for _, _, _, ticker in track_items],
+                return_exceptions=True,
+            )
+            for (pname, ptype, offset, _), bid in zip(track_items, bids):
+                if isinstance(bid, Exception) or bid is None:
+                    continue
+                self._log_price(pname, ptype, offset, state.inning, bid, current_batter, game_label)
 
         # ── Buy logic: only for filtered game, only at LOOKAHEAD offsets ────────
         if not buy:
@@ -241,9 +249,17 @@ class LineupBot:
             if not props_to_try:
                 log.info(f"  NO MARKET for '{player_name}' ({offset} ahead, inning {state.inning}) "
                          f"— not in Kalshi cache")
+                continue
 
-            for prop_type, prop in props_to_try:
-                result = await self.kalshi.get_yes_ask(prop.ticker, max_cents=MAX_BUY_CENTS)
+            # Fetch all asks in parallel
+            ask_results = await asyncio.gather(
+                *[self.kalshi.get_yes_ask(prop.ticker, max_cents=MAX_BUY_CENTS) for _, prop in props_to_try],
+                return_exceptions=True,
+            )
+
+            for (prop_type, prop), result in zip(props_to_try, ask_results):
+                if isinstance(result, Exception):
+                    result = None
                 if result is None:
                     # Fetch real price so user can see why it was skipped
                     real = await self.kalshi.get_yes_ask(prop.ticker, max_cents=99)
