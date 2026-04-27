@@ -40,10 +40,10 @@ log = logging.getLogger("lineup_bot")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-MAX_BUY_CENTS    = 78   # buy early while price is still low, before casual money pumps it
+MAX_BUY_CENTS    = 88   # buy 1-2 batters ahead — price is higher but hold time is short
 MIN_PROFIT_CENTS = 3    # sell when price rises ≥ 3¢ from buy price
-MAX_INNING       = 5    # stop buying after this inning
-LOOKAHEAD        = [3, 4]  # spots ahead to target
+MAX_INNING       = 7    # stop buying after this inning
+LOOKAHEAD        = [1, 2]  # spots ahead to target — close enough to avoid drift
 POLL_SEC         = 3    # how often to poll each game feed
 MAX_SPEND_USD    = 5.0  # max $ per trade
 MAX_OPEN_USD          = 20.0 # pause buying when total open position value exceeds this
