@@ -226,6 +226,10 @@ class LineupBot:
             if hr_prop and hr_prop.ticker not in self.bought:
                 props_to_try.append(("hr", hr_prop))
 
+            if not props_to_try:
+                log.info(f"  NO MARKET for '{player_name}' ({offset} ahead, inning {state.inning}) "
+                         f"— not in Kalshi cache")
+
             for prop_type, prop in props_to_try:
                 result = await self.kalshi.get_yes_ask(prop.ticker, max_cents=MAX_BUY_CENTS)
                 if result is None:
