@@ -117,50 +117,43 @@ class LineupBot:
 
         async with aiohttp.ClientSession() as session:
             while True:
-                games = get_todays_games()
-                live_games = [g for g in games if g.status == "Live"]
+                games     = get_todays_games()
+                all_live  = [g for g in games if g.status == "Live"]
 
-                # Apply game filter
+                # All games → price tracking
+                # Filtered games → buying
                 if self.game_filter:
                     f = self.game_filter.lower()
-                    live_games = [
-                        g for g in live_games
-                        if f in g.home_team.lower() or f in g.away_team.lower()
-                    ]
+                    buy_games   = [g for g in all_live if f in g.home_team.lower() or f in g.away_team.lower()]
+                    track_games = all_live
+                else:
+                    buy_games = track_games = all_live
 
-                states = await asyncio.gather(
-                    *[get_batting_state(g.game_pk, session, self._id_name) for g in live_games],
+                all_states = await asyncio.gather(
+                    *[get_batting_state(g.game_pk, session, self._id_name) for g in track_games],
                     return_exceptions=True,
                 )
+                buy_pks = {g.game_pk for g in buy_games}
 
                 current_batters: set[int] = set()
-                for state in states:
+                for state in all_states:
                     if isinstance(state, Exception) or state is None:
                         continue
                     self._game_states[state.game_pk] = state.current_batter_id
                     current_batters.add(state.current_batter_id)
                     if state.inning <= MAX_INNING:
-                        await self._process_state(state)
+                        # Price tracking: all games
+                        # Buying: only filtered games
+                        await self._process_state(state, buy=state.game_pk in buy_pks)
 
                 await self._check_sells(current_batters)
                 await asyncio.sleep(POLL_SEC)
 
-    async def _process_state(self, state) -> None:
-        # Stop loss check
-        if self.realized_pnl <= -DAILY_STOP_LOSS:
-            log.warning(f"  STOP LOSS HIT — realized P&L ${self.realized_pnl:.2f} — no more buys today")
-            return
-
-        # Check open exposure cap before buying anything
-        exposure = self.open_exposure()
-        if exposure >= MAX_OPEN_USD:
-            log.debug(f"  Open exposure ${exposure:.2f} ≥ ${MAX_OPEN_USD} — pausing buys")
-            return
-
-        balance = await self.kalshi.get_balance() if not self.paper else 500.0
+    async def _process_state(self, state, buy: bool = True) -> None:
+        balance    = await self.kalshi.get_balance() if not self.paper else 500.0
         game_label = f"game_{state.game_pk}"
 
-        # ── Price tracking: observe all batters 1-8 away ──────────────────────
+        # ── Price tracking: observe all batters 1-8 away (all games) ──────────
         for offset in range(1, 9):
             pid = state.upcoming(offset)
             if not pid:
@@ -181,7 +174,19 @@ class LineupBot:
                 if bid:
                     self._log_price(pname, "hr", offset, state.inning, bid, game_label)
 
-        # ── Buy logic: only at LOOKAHEAD offsets ─────────────────────────────
+        # ── Buy logic: only for filtered game, only at LOOKAHEAD offsets ────────
+        if not buy:
+            return
+
+        if self.realized_pnl <= -DAILY_STOP_LOSS:
+            log.warning(f"  STOP LOSS HIT — realized P&L ${self.realized_pnl:.2f} — no more buys today")
+            return
+
+        exposure = self.open_exposure()
+        if exposure >= MAX_OPEN_USD:
+            log.debug(f"  Open exposure ${exposure:.2f} ≥ ${MAX_OPEN_USD} — pausing buys")
+            return
+
         for offset in LOOKAHEAD:
             player_id = state.upcoming(offset)
             if not player_id:
@@ -318,6 +323,51 @@ class LineupBot:
             log.error(f"  Sell failed for {pos.player}: {e}")
 
 
+# ── Analysis ───────────────────────────────────────────────────────────────────
+
+def analyze() -> None:
+    import pandas as pd
+    path = Path("price_tracking.csv")
+    if not path.exists():
+        print("No price_tracking.csv yet — run the bot during a game first.")
+        return
+    df = pd.read_csv(path)
+    if df.empty:
+        print("No data yet.")
+        return
+
+    print(f"\nRecords: {len(df)}  |  Players: {df['player'].nunique()}  |  Games: {df['game'].nunique()}")
+
+    print("\n── Average price by batters away (hit props) ──")
+    hits = df[df["prop_type"].str.startswith("hit")]
+    if not hits.empty:
+        by_dist = hits.groupby("batters_away")["price_cents"].mean().sort_index()
+        for dist, avg in by_dist.items():
+            bar = "█" * int(avg / 5)
+            print(f"  {dist} away:  {avg:5.1f}¢  {bar}")
+
+    print("\n── Average price by batters away (HR props) ──")
+    hrs = df[df["prop_type"] == "hr"]
+    if not hrs.empty:
+        by_dist = hrs.groupby("batters_away")["price_cents"].mean().sort_index()
+        for dist, avg in by_dist.items():
+            bar = "█" * int(avg / 2)
+            print(f"  {dist} away:  {avg:5.1f}¢  {bar}")
+
+    print("\n── Price jump: 4 away → 1 away (per player, top movers) ──")
+    for prop_type in ["hit1+", "hr"]:
+        sub = df[df["prop_type"] == prop_type]
+        if sub.empty:
+            continue
+        at4   = sub[sub["batters_away"] == 4].groupby("player")["price_cents"].mean()
+        at1   = sub[sub["batters_away"] == 1].groupby("player")["price_cents"].mean()
+        delta = (at1 - at4).dropna().sort_values(ascending=False).head(10)
+        if not delta.empty:
+            print(f"\n  {prop_type}:")
+            for player, jump in delta.items():
+                print(f"    {player:25s}  +{jump:.1f}¢ from 4-away to 1-away")
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 async def main() -> None:
@@ -327,6 +377,7 @@ async def main() -> None:
     parser.add_argument("--max-bet",  type=float, default=None, help="Max $ per trade")
     parser.add_argument("--max-open", type=float, default=None, help="Max total $ open at once")
     parser.add_argument("--game",     type=str,   default=None, help="Only watch games with this team name e.g. 'rays'")
+    parser.add_argument("--analyze",  action="store_true", help="Analyze price_tracking.csv")
     args = parser.parse_args()
 
     if args.max_bet is not None:
@@ -335,6 +386,10 @@ async def main() -> None:
     if args.max_open is not None:
         global MAX_OPEN_USD
         MAX_OPEN_USD = args.max_open
+
+    if args.analyze:
+        analyze()
+        return
 
     cfg = yaml.safe_load(open("config.yaml"))
     kalshi = KalshiClient(
