@@ -292,29 +292,23 @@ class LineupBot:
             if pos.sold or not pos.fill_confirmed:
                 continue
 
-            # Track when the at-bat starts
-            if pos.player_id in current_batters and not pos.ab_started:
-                pos.ab_started = True
-                log.info(f"  AT BAT: {pos.player} now batting — watching for sell")
-
             target = pos.actual_fill + MIN_PROFIT_CENTS
             bid    = await self.kalshi.get_yes_bid(ticker)
             if bid is None:
                 continue
 
-            # Profit target hit — sell at current bid
+            # Profit target hit — sell immediately
             if bid >= target:
                 await self._sell(pos, bid, "profit target")
                 continue
 
-            # At-bat ended without hitting profit target — wait for API delay then sell
-            if pos.ab_started and pos.player_id not in current_batters:
-                now = asyncio.get_event_loop().time()
-                if pos.ab_end_detected_at == 0.0:
-                    pos.ab_end_detected_at = now
-                    log.info(f"  AT BAT ENDED: {pos.player} — waiting {AT_BAT_END_DELAY_SEC}s before selling")
-                elif now - pos.ab_end_detected_at >= AT_BAT_END_DELAY_SEC:
-                    await self._sell(pos, bid, "at-bat ended")
+            # API shows player is now batting — in reality they stepped up ~15s ago,
+            # pump has already happened. Sell now at the peak rather than waiting
+            # for the at-bat result which arrives another 15s too late.
+            if pos.player_id in current_batters and not pos.ab_started:
+                pos.ab_started = True
+                log.info(f"  AT BAT DETECTED: {pos.player} — selling now (API ~15s behind real life)")
+                await self._sell(pos, bid, "at-bat started (API lag sell)")
 
     async def _sell(self, pos: OpenPosition, bid: int, reason: str) -> None:
         pnl = pos.contracts * (bid - pos.actual_fill) / 100
