@@ -40,11 +40,11 @@ log = logging.getLogger("lineup_bot")
 # ── Config ─────────────────────────────────────────────────────────────────────
 
 MAX_BUY_CENTS  = 78   # only buy if hit prop YES ask is ≤ this
-SELL_CENTS     = 91   # place sell order at this price immediately after buying
+MIN_PROFIT_CENTS = 10  # sell when price rises ≥ 10¢ from buy price
 MAX_INNING     = 5    # stop buying after this inning
 LOOKAHEAD      = [3, 4]  # spots ahead to target
 POLL_SEC       = 3    # how often to poll each game feed
-MAX_SPEND_USD  = None  # None = full balance per trade
+MAX_SPEND_USD  = 5.0  # max $ per trade
 
 
 # ── Position tracker ───────────────────────────────────────────────────────────
@@ -119,21 +119,22 @@ class LineupBot:
                 continue
 
             yes_cents, qty = result
-            balance = await self.kalshi.get_balance() if not self.paper else 500.0
-            spend   = MAX_SPEND_USD if MAX_SPEND_USD else balance
-            count   = min(qty, int(spend / (MAX_BUY_CENTS / 100)))
+            sell_cents = yes_cents + MIN_PROFIT_CENTS
+            balance    = await self.kalshi.get_balance() if not self.paper else 500.0
+            spend      = min(MAX_SPEND_USD, balance)
+            count      = min(qty, int(spend / (yes_cents / 100)))
 
             if count < 1:
                 log.warning(f"  {player_name}: not enough balance")
                 continue
 
             log.info(f"  BUY {player_name} | {prop.ticker} | {count}x{yes_cents}¢ "
-                     f"(inning {state.inning}, {offset} ahead)")
+                     f"→ sell @ {sell_cents}¢  (inning {state.inning}, {offset} ahead)")
 
             try:
                 await self.kalshi.place_order(prop.ticker, "yes", yes_cents, count, "limit")
-                # Immediately place sell at target
-                await self.kalshi.sell_position(prop.ticker, count, SELL_CENTS)
+                # Immediately place sell at buy_price + 10¢
+                await self.kalshi.sell_position(prop.ticker, count, sell_cents)
 
                 pos = OpenPosition(
                     ticker=prop.ticker,
@@ -145,8 +146,8 @@ class LineupBot:
                 self.bought.add(prop.ticker)
 
                 cost     = count * yes_cents / 100
-                expected = count * (SELL_CENTS - yes_cents) / 100
-                log.info(f"  → cost ${cost:.2f} | expected +${expected:.2f} if fills @ {SELL_CENTS}¢")
+                expected = count * MIN_PROFIT_CENTS / 100
+                log.info(f"  → cost ${cost:.2f} | expected +${expected:.2f} if fills @ {sell_cents}¢")
 
             except Exception as e:
                 log.error(f"  Order failed for {player_name}: {e}")
@@ -156,10 +157,11 @@ class LineupBot:
         for ticker, pos in list(self.positions.items()):
             if pos.sold:
                 continue
+            target = pos.buy_price + MIN_PROFIT_CENTS
             bid = await self.kalshi.get_yes_bid(ticker)
             if bid is not None:
-                log.debug(f"  {pos.player} bid={bid}¢ (sell order @ {SELL_CENTS}¢ resting)")
-                if bid >= SELL_CENTS:
+                log.debug(f"  {pos.player} bid={bid}¢ (sell order @ {target}¢ resting)")
+                if bid >= target:
                     log.info(f"  SELL FILLED (expected): {pos.player} @ ~{bid}¢ "
                              f"| profit ~+${pos.contracts * (bid - pos.buy_price) / 100:.2f}")
                     pos.sold = True
