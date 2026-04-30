@@ -100,18 +100,35 @@ class KalshiClient:
         body = {
             "ticker": ticker,
             "client_order_id": client_order_id,
-            "type": "ioc",
+            "type": "market",
             "action": "buy",
             "side": side,
             "count": count,
-            f"{side}_price": price,
         }
-        log.info("Placing order: %s %s x%d @ %dc", side.upper(), ticker, count, price)
+        log.info("Placing order: %s %s x%d (market)", side.upper(), ticker, count)
         return self._post(_PORTFOLIO + "/orders", body)
 
     def get_orders(self) -> list[dict]:
         data = self._get(_PORTFOLIO + "/orders")
         return data.get("orders", [])
+
+    def cancel_resting_orders(self):
+        try:
+            orders = self._get(_PORTFOLIO + "/orders", params={"status": "resting"}).get("orders", [])
+            for order in orders:
+                oid = order.get("order_id")
+                if not oid:
+                    continue
+                path = f"{_PORTFOLIO}/orders/{oid}"
+                try:
+                    self._request("DELETE", path)
+                    log.info("Cancelled resting order %s", oid)
+                except Exception as e:
+                    log.warning("Failed to cancel order %s: %s", oid, e)
+            if orders:
+                log.info("Cancelled %d resting orders", len(orders))
+        except Exception as e:
+            log.warning("cancel_resting_orders failed: %s", e)
 
     def login(self):
         pass

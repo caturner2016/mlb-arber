@@ -19,6 +19,7 @@ class TennisTrader:
         log.info("Loading tennis data and building Elo ratings...")
         self.predictor.load()
         self.kalshi.login()
+        self.kalshi.cancel_resting_orders()
         self._initialized = True
         balance = self.kalshi.get_balance()
         log.info("Kalshi balance: $%.2f", balance)

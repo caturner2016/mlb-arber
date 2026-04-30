@@ -122,18 +122,25 @@ def parse_match_market(market: dict) -> dict | None:
 
 
 def parse_all_tennis_markets(markets: list[dict]) -> list[dict]:
-    parsed = []
-    seen_events = set()
+    # Group both markets per matchup by event_ticker so we get both full player names
+    by_event: dict[str, list[dict]] = {}
     for m in markets:
         result = parse_match_market(m)
         if not result:
             continue
-        # One market per matchup — skip the complementary (opponent) market
         ev = result["event_ticker"]
-        if ev in seen_events:
-            continue
-        seen_events.add(ev)
-        parsed.append(result)
+        by_event.setdefault(ev, []).append(result)
+
+    parsed = []
+    for ev, pair in by_event.items():
+        if len(pair) == 2:
+            # Both markets present — use full name from each yes_sub_title as the opponent
+            a, b = pair[0], pair[1]
+            a["player_no"] = b["player_yes"]
+            b["player_no"] = a["player_yes"]
+            parsed.append(a)  # only bet one side per matchup
+        else:
+            parsed.append(pair[0])
 
     log.info("Parsed %d match markets from %d raw markets", len(parsed), len(markets))
     return parsed
