@@ -7,3 +7,5 @@ min_edge:            0.05
 kelly_fraction:      0.25
 check_interval:      30
 min_hours_to_close:  2.0
+max_fade_prob:       0.68
+min_yes_price:       0.20

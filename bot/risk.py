@@ -1,6 +1,6 @@
 import logging
 from datetime import date
-from config import DAILY_STOP_LOSS, MAX_BET, MIN_EDGE, KELLY_FRACTION, MIN_CONTRACTS
+from config import DAILY_STOP_LOSS, MAX_BET, MIN_EDGE, KELLY_FRACTION, MIN_CONTRACTS, MAX_FADE_PROB, MIN_YES_PRICE
 from bot.state import get_daily_spent
 
 log = logging.getLogger(__name__)
@@ -96,12 +96,19 @@ def should_bet(model_prob: float, market_prob: float) -> tuple[str, float] | Non
     """
     Decide whether to bet YES or NO and return (side, edge).
     Returns None if no edge.
+
+    Guards:
+    - Don't bet YES on a heavy underdog (market < MIN_YES_PRICE): model
+      compression makes underdogs look systematically attractive.
+    - Don't bet NO against a heavy favorite (market > MAX_FADE_PROB): the
+      model regresses to 50% more than efficient markets do for dominant
+      players, generating false edges.
     """
     yes_edge = model_prob - market_prob
-    no_edge = market_prob - model_prob  # = (1-model) - (1-market) simplified
+    no_edge = market_prob - model_prob
 
-    if yes_edge >= MIN_EDGE:
+    if yes_edge >= MIN_EDGE and market_prob >= MIN_YES_PRICE:
         return "yes", yes_edge
-    if no_edge >= MIN_EDGE:
+    if no_edge >= MIN_EDGE and market_prob <= MAX_FADE_PROB:
         return "no", no_edge
     return None

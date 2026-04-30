@@ -14,6 +14,8 @@ MIN_EDGE             = float(_cfg["min_edge"])
 KELLY_FRACTION       = float(_cfg["kelly_fraction"])
 CHECK_INTERVAL       = int(_cfg["check_interval"])
 MIN_HOURS_TO_CLOSE   = float(_cfg["min_hours_to_close"])
+MAX_FADE_PROB        = float(_cfg.get("max_fade_prob", 0.68))
+MIN_YES_PRICE        = float(_cfg.get("min_yes_price", 0.20))
 
 DATA_DIR   = os.path.join(os.path.dirname(__file__), "data")
 DB_PATH    = os.path.join(os.path.dirname(__file__), "bot_state.db")
