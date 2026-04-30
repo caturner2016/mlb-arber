@@ -24,4 +24,3 @@ ELO_START     = 1500.0
 ELO_K         = 32.0
 SURFACE_BLEND = 0.6
 MIN_CONTRACTS = 1
-DATA_YEARS    = list(range(2015, 2026))
