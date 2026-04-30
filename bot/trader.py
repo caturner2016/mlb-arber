@@ -4,7 +4,7 @@ from kalshi.client import KalshiClient
 from kalshi.markets import parse_all_tennis_markets
 from tennis.predictor import TennisPredictor
 from bot.risk import should_bet, size_bet, daily_budget_remaining
-from bot.state import record_bet
+from bot.state import already_bet, record_bet
 
 log = logging.getLogger(__name__)
 
@@ -50,8 +50,13 @@ class TennisTrader:
         placed = 0
         skipped_no_data = 0
         skipped_no_edge = 0
+        skipped_already_bet = 0
 
         for m in markets:
+            if already_bet(m["ticker"]):
+                skipped_already_bet += 1
+                continue
+
             market_prob = m["yes_price_cents"] / 100.0
             model_prob = self.predictor.predict(
                 m["player_yes"], m["player_no"], m["surface"]
@@ -115,8 +120,8 @@ class TennisTrader:
                 log.error("Order failed for %s: %s", m["ticker"], e)
 
         log.info(
-            "Cycle done — placed=%d no_data=%d no_edge=%d",
-            placed, skipped_no_data, skipped_no_edge,
+            "Cycle done — placed=%d no_data=%d no_edge=%d already_bet=%d",
+            placed, skipped_no_data, skipped_no_edge, skipped_already_bet,
         )
 
     def refresh_data(self):
