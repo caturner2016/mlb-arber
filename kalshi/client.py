@@ -69,18 +69,16 @@ class KalshiClient:
     # Markets
     # ------------------------------------------------------------------
 
-    def get_markets(self, search: str = "", limit: int = 200) -> list[dict]:
-        params = {"status": "open", "limit": limit}
-        if search:
-            params["search"] = search
+    def get_markets_by_series(self, series_ticker: str, limit: int = 200) -> list[dict]:
+        params = {"status": "open", "limit": limit, "series_ticker": series_ticker}
         data = self._get(_MARKETS, params=params)
         return data.get("markets", [])
 
     def get_tennis_markets(self) -> list[dict]:
         results = []
         seen = set()
-        for term in ("tennis", "atp", "wta", "wimbledon", "us open", "french open", "australian open"):
-            for m in self.get_markets(search=term):
+        for series in ("KXATPMATCH", "KXWTAMATCH", "KXITFMATCH"):
+            for m in self.get_markets_by_series(series):
                 if m["ticker"] not in seen:
                     seen.add(m["ticker"])
                     results.append(m)

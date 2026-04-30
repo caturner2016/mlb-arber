@@ -14,10 +14,14 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
     handlers=[
-        logging.FileHandler(LOG_PATH),
+        logging.FileHandler(LOG_PATH, encoding="utf-8"),
         logging.StreamHandler(),
     ],
 )
+# Windows consoles often can't handle Unicode — make stdout handler safe
+for h in logging.root.handlers:
+    if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+        h.stream = open(h.stream.fileno(), mode="w", encoding="utf-8", errors="replace", closefd=False)
 log = logging.getLogger("main")
 
 
