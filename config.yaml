@@ -1,8 +1,8 @@
 kalshi_key_id:           "1b7a51a0-6b45-4c07-b69e-c13490f31b5f"
 kalshi_private_key_path: "kalshi_key.pem"
 
-daily_stop_loss:    20.0
-max_bet:             1.0
+daily_stop_loss:    40.0
+max_bet:             4.0
 min_edge:            0.05
 kelly_fraction:      0.25
 check_interval:      30
