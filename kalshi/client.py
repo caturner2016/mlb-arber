@@ -100,7 +100,7 @@ class KalshiClient:
         body = {
             "ticker": ticker,
             "client_order_id": client_order_id,
-            "type": "limit",
+            "type": "ioc",
             "action": "buy",
             "side": side,
             "count": count,
