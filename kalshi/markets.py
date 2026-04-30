@@ -115,6 +115,7 @@ def parse_all_tennis_markets(markets: list[dict]) -> list[dict]:
             parsed.append(result)
     log.info("Parsed %d match markets from %d raw markets", len(parsed), len(markets))
     if not parsed and markets:
+        log.info("Full first market dict: %s", markets[0])
         log.info("Sample market titles (first 10):")
         for m in markets[:10]:
             log.info("  [%s] %s | %s", m.get("ticker",""), m.get("title",""), m.get("subtitle",""))
