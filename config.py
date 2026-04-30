@@ -5,7 +5,6 @@ _cfg_path = os.path.join(os.path.dirname(__file__), "config.yaml")
 with open(_cfg_path) as _f:
     _cfg = yaml.safe_load(_f)
 
-KALSHI_BASE_URL      = "https://trading-api.kalshi.com/trade-api/v2"
 KALSHI_KEY_ID        = _cfg["kalshi_key_id"]
 KALSHI_PRIVATE_KEY_PATH = os.path.join(os.path.dirname(__file__), _cfg["kalshi_private_key_path"])
 
