@@ -97,15 +97,18 @@ class KalshiClient:
         return data.get("market_positions", [])
 
     def place_order(self, ticker: str, side: str, count: int, price: int, client_order_id: str) -> dict:
+        # Always express price as yes_price per Kalshi convention
+        yes_price = price if side == "yes" else 100 - price
         body = {
             "ticker": ticker,
             "client_order_id": client_order_id,
-            "type": "market",
+            "type": "limit",
             "action": "buy",
             "side": side,
             "count": count,
+            "yes_price": yes_price,
         }
-        log.info("Placing order: %s %s x%d (market)", side.upper(), ticker, count)
+        log.info("Placing order: %s %s x%d @ %dc", side.upper(), ticker, count, price)
         return self._post(_PORTFOLIO + "/orders", body)
 
     def get_orders(self) -> list[dict]:

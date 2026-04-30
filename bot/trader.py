@@ -79,17 +79,24 @@ class TennisTrader:
                 continue
 
             side, edge = decision
+
+            # Use the actual ask price so the limit order fills immediately
+            ask_cents = m["yes_ask_cents"] if side == "yes" else m["no_ask_cents"]
+            ask_cents = max(1, min(99, ask_cents))
+
             sizing = size_bet(model_prob, market_prob, side)
             if sizing is None:
                 continue
 
-            amount, contracts, price_cents = sizing
+            amount, contracts, _ = sizing
+            # Recalculate amount using actual ask price
+            amount = round(contracts * ask_cents / 100, 2)
 
             log.info(
                 "BET %s | %s | model=%.1f%% mkt=%.1f%% edge=%.1f%% | %s x%d @ %dc = $%.2f",
                 side.upper(), m["title"],
                 model_prob * 100, market_prob * 100, edge * 100,
-                side.upper(), contracts, price_cents, amount,
+                side.upper(), contracts, ask_cents, amount,
             )
 
             try:
@@ -98,7 +105,7 @@ class TennisTrader:
                     ticker=m["ticker"],
                     side=side,
                     count=contracts,
-                    price=price_cents,
+                    price=ask_cents,
                     client_order_id=order_id,
                 )
                 kalshi_id = resp.get("order", {}).get("order_id", order_id)
