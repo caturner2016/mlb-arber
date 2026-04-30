@@ -116,7 +116,7 @@ class TennisTrader:
                     player_no=m["player_no"],
                     side=side,
                     contracts=contracts,
-                    price_cents=price_cents,
+                    price_cents=ask_cents,
                     amount_usd=amount,
                     model_prob=model_prob,
                     market_prob=market_prob,
