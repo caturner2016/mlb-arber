@@ -3,7 +3,7 @@ import base64
 import logging
 import requests
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
+from cryptography.hazmat.primitives.asymmetric.padding import PSS, MGF1
 from config import KALSHI_BASE_URL, KALSHI_KEY_ID, KALSHI_PRIVATE_KEY_PATH
 
 log = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ class KalshiClient:
     def _auth_headers(self, method: str, path: str) -> dict:
         timestamp = str(int(time.time() * 1000))
         message = f"{timestamp}{method.upper()}{path}".encode()
-        sig = self._private_key.sign(message, asym_padding.PKCS1v15(), hashes.SHA256())
+        sig = self._private_key.sign(message, PSS(mgf=MGF1(hashes.SHA256()), salt_length=PSS.MAX_LENGTH), hashes.SHA256())
         return {
             "KALSHI-ACCESS-KEY":       KALSHI_KEY_ID,
             "KALSHI-ACCESS-TIMESTAMP": timestamp,
