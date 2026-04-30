@@ -15,7 +15,11 @@ SACKMANN_YEARS = list(range(2015, 2025))
 TML_URL = "https://raw.githubusercontent.com/Tennismylife/TML-Database/master/{year}.csv"
 TML_YEARS = [2025, 2026]
 
-COLS = ["tourney_date", "surface", "winner_name", "loser_name"]
+COLS = [
+    "tourney_date", "surface", "winner_name", "loser_name",
+    "w_svpt", "w_1stWon", "w_2ndWon",
+    "l_svpt", "l_1stWon", "l_2ndWon",
+]
 
 
 def _fetch(url: str, cache_name: str, force: bool = False) -> pd.DataFrame | None:
