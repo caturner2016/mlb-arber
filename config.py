@@ -1,26 +1,27 @@
 import os
-from dotenv import load_dotenv
+import yaml
 
-load_dotenv()
+_cfg_path = os.path.join(os.path.dirname(__file__), "config.yaml")
+with open(_cfg_path) as _f:
+    _cfg = yaml.safe_load(_f)
 
-KALSHI_EMAIL = os.getenv("KALSHI_EMAIL", "")
-KALSHI_PASSWORD = os.getenv("KALSHI_PASSWORD", "")
-KALSHI_BASE_URL = "https://trading-api.kalshi.com/trade-api/v2"
+KALSHI_BASE_URL      = "https://trading-api.kalshi.com/trade-api/v2"
+KALSHI_KEY_ID        = _cfg["kalshi_key_id"]
+KALSHI_PRIVATE_KEY_PATH = os.path.join(os.path.dirname(__file__), _cfg["kalshi_private_key_path"])
 
-DAILY_STOP_LOSS = float(os.getenv("DAILY_STOP_LOSS", "20.0"))
-MAX_BET = float(os.getenv("MAX_BET", "1.0"))
-MIN_EDGE = float(os.getenv("MIN_EDGE", "0.05"))
-KELLY_FRACTION = float(os.getenv("KELLY_FRACTION", "0.25"))
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "30"))
+DAILY_STOP_LOSS      = float(_cfg["daily_stop_loss"])
+MAX_BET              = float(_cfg["max_bet"])
+MIN_EDGE             = float(_cfg["min_edge"])
+KELLY_FRACTION       = float(_cfg["kelly_fraction"])
+CHECK_INTERVAL       = int(_cfg["check_interval"])
+MIN_HOURS_TO_CLOSE   = float(_cfg["min_hours_to_close"])
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
-DB_PATH = os.path.join(os.path.dirname(__file__), "bot_state.db")
-LOG_PATH = os.path.join(os.path.dirname(__file__), "bot.log")
+DATA_DIR   = os.path.join(os.path.dirname(__file__), "data")
+DB_PATH    = os.path.join(os.path.dirname(__file__), "bot_state.db")
+LOG_PATH   = os.path.join(os.path.dirname(__file__), "bot.log")
 
-MIN_HOURS_TO_CLOSE = float(os.getenv("MIN_HOURS_TO_CLOSE", "2.0"))
-
-ELO_START = 1500.0
-ELO_K = 32.0
-SURFACE_BLEND = 0.6  # surface-specific elo weight vs overall
+ELO_START     = 1500.0
+ELO_K         = 32.0
+SURFACE_BLEND = 0.6
 MIN_CONTRACTS = 1
-DATA_YEARS = list(range(2015, 2026))
+DATA_YEARS    = list(range(2015, 2026))

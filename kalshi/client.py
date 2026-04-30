@@ -1,7 +1,10 @@
 import time
+import base64
 import logging
 import requests
-from config import KALSHI_BASE_URL, KALSHI_EMAIL, KALSHI_PASSWORD
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
+from config import KALSHI_BASE_URL, KALSHI_KEY_ID, KALSHI_PRIVATE_KEY_PATH
 
 log = logging.getLogger(__name__)
 
@@ -10,42 +13,39 @@ _RETRY_DELAYS = [2, 4, 8, 16]
 
 class KalshiClient:
     def __init__(self):
-        self._token: str | None = None
         self._session = requests.Session()
+        self._session.headers.update({"Content-Type": "application/json"})
+        with open(KALSHI_PRIVATE_KEY_PATH, "rb") as f:
+            self._private_key = serialization.load_pem_private_key(f.read(), password=None)
+        log.info("Kalshi API key loaded (id: %s)", KALSHI_KEY_ID[:8] + "...")
 
     # ------------------------------------------------------------------
-    # Auth
+    # Auth — RSA signature on every request
     # ------------------------------------------------------------------
 
-    def login(self):
-        resp = self._post("/login", {"email": KALSHI_EMAIL, "password": KALSHI_PASSWORD}, auth=False)
-        self._token = resp["token"]
-        self._session.headers.update({"Authorization": f"Bearer {self._token}"})
-        log.info("Kalshi login OK")
-
-    def _ensure_auth(self):
-        if not self._token:
-            self.login()
+    def _auth_headers(self, method: str, path: str) -> dict:
+        timestamp = str(int(time.time() * 1000))
+        message = f"{timestamp}{method.upper()}{path}".encode()
+        sig = self._private_key.sign(message, asym_padding.PKCS1v15(), hashes.SHA256())
+        return {
+            "KALSHI-ACCESS-KEY":       KALSHI_KEY_ID,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp,
+            "KALSHI-ACCESS-SIGNATURE": base64.b64encode(sig).decode(),
+        }
 
     # ------------------------------------------------------------------
     # HTTP helpers
     # ------------------------------------------------------------------
 
-    def _request(self, method: str, path: str, auth: bool = True, **kwargs) -> dict:
-        if auth:
-            self._ensure_auth()
+    def _request(self, method: str, path: str, **kwargs) -> dict:
         url = KALSHI_BASE_URL + path
         for attempt, delay in enumerate([-1] + _RETRY_DELAYS):
             if delay >= 0:
                 log.warning("Retrying %s %s in %ds", method, path, delay)
                 time.sleep(delay)
             try:
-                resp = self._session.request(method, url, timeout=20, **kwargs)
-                if resp.status_code == 401 and auth:
-                    log.warning("Token expired, re-logging in")
-                    self._token = None
-                    self.login()
-                    continue
+                headers = self._auth_headers(method, path)
+                resp = self._session.request(method, url, headers=headers, timeout=20, **kwargs)
                 resp.raise_for_status()
                 return resp.json()
             except requests.RequestException as e:
@@ -57,8 +57,8 @@ class KalshiClient:
     def _get(self, path: str, params: dict | None = None) -> dict:
         return self._request("GET", path, params=params)
 
-    def _post(self, path: str, body: dict, auth: bool = True) -> dict:
-        return self._request("POST", path, auth=auth, json=body)
+    def _post(self, path: str, body: dict) -> dict:
+        return self._request("POST", path, json=body)
 
     # ------------------------------------------------------------------
     # Markets
@@ -73,10 +73,11 @@ class KalshiClient:
 
     def get_tennis_markets(self) -> list[dict]:
         results = []
+        seen = set()
         for term in ("tennis", "atp", "wta", "wimbledon", "us open", "french open", "australian open"):
-            markets = self.get_markets(search=term)
-            for m in markets:
-                if m["ticker"] not in {r["ticker"] for r in results}:
+            for m in self.get_markets(search=term):
+                if m["ticker"] not in seen:
+                    seen.add(m["ticker"])
                     results.append(m)
         return results
 
@@ -85,7 +86,6 @@ class KalshiClient:
     # ------------------------------------------------------------------
 
     def get_balance(self) -> float:
-        """Returns balance in dollars."""
         data = self._get("/portfolio/balance")
         return data.get("balance", 0) / 100.0
 
@@ -96,9 +96,9 @@ class KalshiClient:
     def place_order(
         self,
         ticker: str,
-        side: str,       # "yes" or "no"
-        count: int,      # number of contracts
-        price: int,      # cents (1-99)
+        side: str,
+        count: int,
+        price: int,
         client_order_id: str,
     ) -> dict:
         body = {
@@ -116,3 +116,6 @@ class KalshiClient:
     def get_orders(self) -> list[dict]:
         data = self._get("/portfolio/orders")
         return data.get("orders", [])
+
+    def login(self):
+        pass  # no-op, kept for compatibility
