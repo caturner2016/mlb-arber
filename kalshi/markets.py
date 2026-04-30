@@ -1,5 +1,7 @@
 import re
 import logging
+from datetime import datetime, timezone
+from config import MIN_HOURS_TO_CLOSE
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +81,18 @@ def parse_match_market(market: dict) -> dict | None:
 
     if yes_mid <= 0 or yes_mid >= 100:
         return None
+
+    # Skip markets that are close to expiry — match is likely in progress
+    close_time_str = market.get("close_time", "") or ""
+    if close_time_str:
+        try:
+            close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
+            hours_left = (close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+            if hours_left < MIN_HOURS_TO_CLOSE:
+                log.debug("Skipping likely live market '%s' (%.1fh to close)", title, hours_left)
+                return None
+        except ValueError:
+            pass
 
     return {
         "ticker": market["ticker"],
