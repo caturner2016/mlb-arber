@@ -25,7 +25,8 @@ class KalshiClient:
 
     def _auth_headers(self, method: str, path: str) -> dict:
         timestamp = str(int(time.time() * 1000))
-        message = f"{timestamp}{method.upper()}{path}".encode()
+        full_path = "/trade-api/v2" + path
+        message = f"{timestamp}{method.upper()}{full_path}".encode()
         sig = self._private_key.sign(message, PSS(mgf=MGF1(hashes.SHA256()), salt_length=PSS.MAX_LENGTH), hashes.SHA256())
         return {
             "KALSHI-ACCESS-KEY":       KALSHI_KEY_ID,
