@@ -5,17 +5,6 @@ from config import MIN_HOURS_TO_CLOSE
 
 log = logging.getLogger(__name__)
 
-# Patterns like "Djokovic vs Alcaraz", "Swiatek v Sabalenka", "Murray beat Federer"
-_VS_RE = re.compile(
-    r"([A-Z][a-zA-Z\-']+(?:\s[A-Z][a-zA-Z\-']+)*)"
-    r"\s+(?:vs\.?|v\.?|beat|beats|def\.?)\s+"
-    r"([A-Z][a-zA-Z\-']+(?:\s[A-Z][a-zA-Z\-']+)*)",
-    re.IGNORECASE,
-)
-
-# Surface keywords in title/subtitle
-_SURFACE_RE = re.compile(r"\b(clay|grass|hard|carpet|indoor)\b", re.IGNORECASE)
-
 _SURFACE_MAP = {
     "wimbledon": "grass",
     "roland garros": "clay",
@@ -34,89 +23,117 @@ _SURFACE_MAP = {
     "paris": "hard",
 }
 
+_SURFACE_RE = re.compile(r"\b(clay|grass|hard)\b", re.IGNORECASE)
+
+# Extracts opponent from "... the Sinner vs Fils: ..." pattern
+_OPPONENT_RE = re.compile(
+    r"\bthe\s+(\S+)\s+vs\s+(\S+)\s*:",
+    re.IGNORECASE,
+)
+
 
 def _infer_surface(text: str) -> str:
     text_lower = text.lower()
     m = _SURFACE_RE.search(text_lower)
     if m:
-        s = m.group(1).lower()
-        return "hard" if s == "carpet" or s == "indoor" else s
+        return m.group(1).lower()
     for keyword, surface in _SURFACE_MAP.items():
         if keyword in text_lower:
             return surface
-    return "hard"  # default
+    return "hard"
+
+
+def _dollars_to_cents(val) -> int:
+    try:
+        return round(float(val) * 100)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_pre_match(close_time_str: str) -> bool:
+    if not close_time_str:
+        return True
+    try:
+        close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
+        hours_left = (close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
+        return hours_left >= MIN_HOURS_TO_CLOSE
+    except ValueError:
+        return True
 
 
 def parse_match_market(market: dict) -> dict | None:
     """
-    Given a Kalshi market dict, try to extract:
-      - player_yes: name of player that YES resolves to
-      - player_no:  opponent
-      - surface:    inferred surface
-    Returns None if market doesn't look like a 1v1 match winner market.
+    Parse a single Kalshi tennis match market.
+    Each market represents one player winning (yes_sub_title = that player).
+    Returns None if market is not a valid pre-match 1v1 market.
     """
-    title = market.get("title", "") or ""
-    subtitle = market.get("subtitle", "") or ""
-    full_text = f"{title} {subtitle}"
+    player_yes = (market.get("yes_sub_title") or "").strip()
+    if not player_yes:
+        return None
 
-    m = _VS_RE.search(full_text)
+    title = market.get("title", "") or ""
+    full_text = f"{title} {market.get('rules_primary', '')}"
+
+    # Extract opponent from "the X vs Y:" pattern in title
+    m = _OPPONENT_RE.search(title)
     if not m:
         return None
 
-    player_yes, player_no = m.group(1).strip(), m.group(2).strip()
+    name_a, name_b = m.group(1).strip(), m.group(2).strip()
+    # player_no is whichever name in the VS pair doesn't match player_yes's last name
+    yes_last = player_yes.split()[-1].lower()
+    if name_a.lower() == yes_last or name_a.lower() in player_yes.lower():
+        player_no = name_b
+    elif name_b.lower() == yes_last or name_b.lower() in player_yes.lower():
+        player_no = name_a
+    else:
+        # fallback: pick the one that doesn't appear in player_yes
+        player_no = name_b if name_a.lower() in player_yes.lower() else name_a
 
-    # Skip if either "player" is a generic word
-    generic = {"match", "game", "set", "round", "final", "winner", "player"}
-    if player_yes.lower() in generic or player_no.lower() in generic:
+    if not player_no:
+        return None
+
+    if not _is_pre_match(market.get("close_time", "")):
+        log.debug("Skipping likely live market: %s", title)
+        return None
+
+    yes_ask = _dollars_to_cents(market.get("yes_ask_dollars", 0))
+    yes_bid = _dollars_to_cents(market.get("yes_bid_dollars", 0))
+    no_ask  = _dollars_to_cents(market.get("no_ask_dollars", 0))
+
+    yes_mid = (yes_bid + yes_ask) / 2 if yes_ask else yes_bid
+    if yes_mid <= 0 or yes_mid >= 100:
         return None
 
     surface = _infer_surface(full_text)
 
-    yes_ask = market.get("yes_ask", 0) or 0
-    no_ask = market.get("no_ask", 0) or 0
-    yes_bid = market.get("yes_bid", 0) or 0
-
-    # Use mid-price as our reference
-    yes_mid = (yes_bid + yes_ask) / 2 if yes_ask else yes_bid
-
-    if yes_mid <= 0 or yes_mid >= 100:
-        return None
-
-    # Skip markets that are close to expiry — match is likely in progress
-    close_time_str = market.get("close_time", "") or ""
-    if close_time_str:
-        try:
-            close_dt = datetime.fromisoformat(close_time_str.replace("Z", "+00:00"))
-            hours_left = (close_dt - datetime.now(timezone.utc)).total_seconds() / 3600
-            if hours_left < MIN_HOURS_TO_CLOSE:
-                log.debug("Skipping likely live market '%s' (%.1fh to close)", title, hours_left)
-                return None
-        except ValueError:
-            pass
-
     return {
-        "ticker": market["ticker"],
-        "title": title,
-        "player_yes": player_yes,
-        "player_no": player_no,
-        "surface": surface,
+        "ticker":          market["ticker"],
+        "event_ticker":    market.get("event_ticker", market["ticker"]),
+        "title":           title,
+        "player_yes":      player_yes,
+        "player_no":       player_no,
+        "surface":         surface,
         "yes_price_cents": round(yes_mid),
-        "yes_ask_cents": yes_ask,
-        "no_ask_cents": no_ask,
-        "close_time": market.get("close_time", ""),
+        "yes_ask_cents":   yes_ask,
+        "no_ask_cents":    no_ask,
+        "close_time":      market.get("close_time", ""),
     }
 
 
 def parse_all_tennis_markets(markets: list[dict]) -> list[dict]:
     parsed = []
+    seen_events = set()
     for m in markets:
         result = parse_match_market(m)
-        if result:
-            parsed.append(result)
+        if not result:
+            continue
+        # One market per matchup — skip the complementary (opponent) market
+        ev = result["event_ticker"]
+        if ev in seen_events:
+            continue
+        seen_events.add(ev)
+        parsed.append(result)
+
     log.info("Parsed %d match markets from %d raw markets", len(parsed), len(markets))
-    if not parsed and markets:
-        log.info("Full first market dict: %s", markets[0])
-        log.info("Sample market titles (first 10):")
-        for m in markets[:10]:
-            log.info("  [%s] %s | %s", m.get("ticker",""), m.get("title",""), m.get("subtitle",""))
     return parsed
